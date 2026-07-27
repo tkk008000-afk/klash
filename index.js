@@ -2337,9 +2337,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // ----- بقية التفاعلات (المهام، الإجازات، المتجر، الاقتراحات، التذاكر، إلخ) -----
-
-    // زر فتح مودال طلب الإجازة
+    // ----- زر فتح مودال طلب الإجازة -----
     if (interaction.isButton() && interaction.customId === 'open_leave_modal') {
       const hasPerm = await isJuniorAdmin(interaction.member, guildId);
       if (!hasPerm) return interaction.reply({ content: '❌ هذا الزر مخصص للإداريين فقط.', ephemeral: true });
@@ -2358,7 +2356,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // مودال طلب الإجازة
+    // ----- مودال طلب الإجازة -----
     if (interaction.isModalSubmit() && interaction.customId === 'leave_modal') {
       const reason = interaction.fields.getTextInputValue('leave_reason');
       const duration = parseInt(interaction.fields.getTextInputValue('leave_duration'));
@@ -2392,7 +2390,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // أزرار الموافقة على الإجازات
+    // ----- أزرار الموافقة على الإجازات -----
     if (interaction.isButton() && interaction.customId.startsWith('leave_')) {
       const parts = interaction.customId.split('_');
       const action = parts[1];
@@ -2422,4 +2420,420 @@ client.on('interactionCreate', async (interaction) => {
           await member.roles.add(leaveRole);
         }
         await interaction.reply({ content: `✅ تمت الموافقة على إجازة <@${request.userId}>.`, ephemeral: false });
-        try { const userMember = await interaction.guild.members.fetch(request.userId); await userMember
+        try {
+          const userMember = await interaction.guild.members.fetch(request.userId);
+          await userMember.send(`✅ تمت الموافقة على طلب إجازتك لمدة ${request.duration} يوم.`);
+        } catch (e) {}
+      } else if (action === 'reject') {
+        request.status = 'rejected';
+        await request.save();
+        await interaction.reply({ content: `❌ تم رفض إجازة <@${request.userId}>.`, ephemeral: false });
+        try {
+          const userMember = await interaction.guild.members.fetch(request.userId);
+          await userMember.send(`❌ تم رفض طلب إجازتك.`);
+        } catch (e) {}
+      }
+      return;
+    }
+
+    // ----- أزرار المهام (إنشاء، عرض، إنهاء) -----
+    if (interaction.isButton() && interaction.customId.startsWith('task_')) {
+      const action = interaction.customId.split('_')[1];
+      if (action === 'create') {
+        if (!(await isSeniorAdmin(interaction.member, guildId)))
+          return interaction.reply({ content: '❌ ليس لديك صلاحية.', ephemeral: true });
+        const modal = new ModalBuilder()
+          .setCustomId('task_create_modal')
+          .setTitle('📝 إنشاء مهمة')
+          .addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder().setCustomId('task_title').setLabel('عنوان المهمة').setStyle(TextInputStyle.Short).setRequired(true)
+            ),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder().setCustomId('task_desc').setLabel('وصف المهمة').setStyle(TextInputStyle.Paragraph).setRequired(true)
+            ),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder().setCustomId('task_to').setLabel('معرف المستلم (ID)').setStyle(TextInputStyle.Short).setRequired(true)
+            ),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder().setCustomId('task_kl_points').setLabel('نقاط KL').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('مثال: 10')
+            ),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder().setCustomId('task_admin_points').setLabel('نقاط إدارية').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('مثال: 5')
+            )
+          );
+        await interaction.showModal(modal);
+        return;
+      } else if (action === 'list') {
+        const tasks = await Task.find({ guildId, status: { $in: ['pending', 'accepted'] } });
+        if (!tasks.length) return interaction.reply({ content: '📭 لا توجد مهام معلقة.', ephemeral: true });
+        let desc = '';
+        for (const t of tasks) {
+          const assignedBy = await interaction.guild.members.fetch(t.assignedBy).catch(() => null);
+          const assignedTo = await interaction.guild.members.fetch(t.assignedTo).catch(() => null);
+          desc += `**${t.title}** - ${t.status}\nمن: ${assignedBy ? assignedBy.user.username : 'غير معروف'} → إلى: ${assignedTo ? assignedTo.user.username : 'غير معروف'}\n`;
+        }
+        const embed = new EmbedBuilder().setTitle('📋 المهام').setDescription(desc).setColor(0x2b2d31);
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+        return;
+      } else if (action === 'complete') {
+        const tasks = await Task.find({ guildId, assignedTo: interaction.user.id, status: 'accepted' });
+        if (!tasks.length) return interaction.reply({ content: '📭 لا توجد مهام موكلة إليك.', ephemeral: true });
+        const options = tasks.map(t => ({
+          label: t.title,
+          value: t._id.toString(),
+          description: `حالة: ${t.status}`,
+        }));
+        const row = new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId('task_complete_select')
+            .setPlaceholder('اختر مهمة لإنهائها...')
+            .addOptions(options)
+        );
+        await interaction.reply({ content: 'اختر المهمة التي أنجزتها:', components: [row], ephemeral: true });
+        return;
+      }
+    }
+
+    // ----- مودال إنشاء مهمة -----
+    if (interaction.isModalSubmit() && interaction.customId === 'task_create_modal') {
+      const title = interaction.fields.getTextInputValue('task_title');
+      const desc = interaction.fields.getTextInputValue('task_desc');
+      const toId = interaction.fields.getTextInputValue('task_to');
+      const klPoints = parseInt(interaction.fields.getTextInputValue('task_kl_points')) || 0;
+      const adminPoints = parseInt(interaction.fields.getTextInputValue('task_admin_points')) || 0;
+      const target = await interaction.guild.members.fetch(toId).catch(() => null);
+      if (!target) return interaction.reply({ content: '❌ المستلم غير موجود.', ephemeral: true });
+      const task = new Task({
+        guildId,
+        assignedBy: interaction.user.id,
+        assignedTo: toId,
+        title,
+        description: desc,
+        points: klPoints,
+        adminPoints: adminPoints,
+      });
+      await task.save();
+      const user = await getUser(guildId, toId);
+      user.assignedTasks.push({ taskId: task._id, status: 'pending' });
+      await user.save();
+      await interaction.reply({ content: `✅ تم إنشاء المهمة وإرسالها إلى ${target}.\nنقاط KL: ${klPoints} | نقاط إدارية: ${adminPoints}`, ephemeral: true });
+      try { await target.send(`📩 تم تكليفك بمهمة جديدة: **${title}**\nنقاط KL: ${klPoints} | نقاط إدارية: ${adminPoints}\nاستخدم \`!لوحة_المهام\` لقبولها.`); } catch (e) {}
+      return;
+    }
+
+    // ----- اختيار مهمة لإنهائها (يعرض مودال إثبات) -----
+    if (interaction.isStringSelectMenu() && interaction.customId === 'task_complete_select') {
+      const taskId = interaction.values[0];
+      const task = await Task.findById(taskId);
+      if (!task) return interaction.reply({ content: '❌ المهمة غير موجودة.', ephemeral: true });
+      if (task.assignedTo !== interaction.user.id) return interaction.reply({ content: '❌ هذه المهمة ليست موكلة إليك.', ephemeral: true });
+      const modal = new ModalBuilder()
+        .setCustomId(`task_proof_${taskId}`)
+        .setTitle('📝 تقديم إثبات إنجاز')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('proof_text')
+              .setLabel('نص الإثبات (شرح الإنجاز)')
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setMinLength(5)
+              .setMaxLength(500)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('proof_image')
+              .setLabel('رابط صورة (اختياري)')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(false)
+              .setPlaceholder('https://...')
+          )
+        );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    // ----- تقديم الإثبات وإنهاء المهمة -----
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('task_proof_')) {
+      const taskId = interaction.customId.split('_')[2];
+      const task = await Task.findById(taskId);
+      if (!task) return interaction.reply({ content: '❌ المهمة غير موجودة.', ephemeral: true });
+      if (task.assignedTo !== interaction.user.id) return interaction.reply({ content: '❌ هذه المهمة ليست موكلة إليك.', ephemeral: true });
+      if (task.status === 'completed') return interaction.reply({ content: '⚠️ هذه المهمة مكتملة بالفعل.', ephemeral: true });
+      const proofText = interaction.fields.getTextInputValue('proof_text');
+      const proofImage = interaction.fields.getTextInputValue('proof_image') || null;
+      task.status = 'completed';
+      task.completedAt = new Date();
+      task.proofText = proofText;
+      task.proofImage = proofImage;
+      await task.save();
+      const user = await getUser(guildId, interaction.user.id);
+      user.kl += task.points;
+      user.adminPoints += task.adminPoints;
+      await user.save();
+      const userTasks = user.assignedTasks;
+      const idx = userTasks.findIndex(t => t.taskId.toString() === taskId);
+      if (idx !== -1) userTasks[idx].status = 'completed';
+      await user.save();
+      const config = await getGuildConfig(guildId);
+      const promotionPoints = config.promotionPoints || 100;
+      if (user.adminPoints >= promotionPoints) {
+        const member = await interaction.guild.members.fetch(interaction.user.id);
+        const juniorRole = config.juniorAdminRole ? interaction.guild.roles.cache.get(config.juniorAdminRole) : null;
+        if (juniorRole && !member.roles.cache.has(juniorRole.id)) {
+          await member.roles.add(juniorRole);
+          await interaction.followUp({ content: `🎉 ترقية! لقد وصلت إلى رتبة الإداري الصغري.`, ephemeral: true });
+          user.adminPoints -= promotionPoints;
+          await user.save();
+        } else {
+          await interaction.followUp({ content: `🎉 لقد تجاوزت نقاط الترقية، لكن لا توجد رتبة أعلى متاحة.`, ephemeral: true });
+        }
+      }
+      await interaction.reply({
+        content: `✅ تم إنهاء المهمة **${task.title}**\nحصلت على **${task.points} KL** و **${task.adminPoints} نقاط إدارية**.\nالإثبات: ${proofText}${proofImage ? `\n[صورة](${proofImage})` : ''}`,
+        ephemeral: true
+      });
+      const creator = await interaction.guild.members.fetch(task.assignedBy).catch(() => null);
+      if (creator) {
+        try { await creator.send(`✅ ${interaction.user.username} أنهى المهمة: **${task.title}**\nالإثبات: ${proofText}${proofImage ? `\nصورة: ${proofImage}` : ''}`); } catch (e) {}
+      }
+      return;
+    }
+
+    // ----- متجر – شراء رتبة -----
+    if (interaction.isStringSelectMenu() && interaction.customId === 'store_buy') {
+      const itemId = interaction.values[0];
+      const item = await StoreItem.findById(itemId);
+      if (!item) return interaction.reply({ content: '❌ المنتج غير موجود.', ephemeral: true });
+      const user = await getUser(guildId, interaction.user.id);
+      if (user.kl < item.price) return interaction.reply({ content: `⚠️ رصيدك غير كافٍ. تحتاج ${item.price} KL.`, ephemeral: true });
+      user.kl -= item.price;
+      await user.save();
+      const role = interaction.guild.roles.cache.get(item.roleId);
+      if (!role) return interaction.reply({ content: '❌ الرتبة غير موجودة.', ephemeral: true });
+      await interaction.member.roles.add(role);
+      await interaction.reply({ content: `✅ تم شراء رتبة ${role} مقابل ${item.price} KL.`, ephemeral: true });
+      return;
+    }
+
+    // ----- تسجيل الدخول للمودات -----
+    if (interaction.isModalSubmit() && interaction.customId === 'mod_login_modal') {
+      const password = interaction.fields.getTextInputValue('mod_password');
+      const modEntry = await ModLogin.findOne({ guildId, userId: interaction.user.id });
+      if (!modEntry) return interaction.reply({ content: '❌ لا يوجد حساب مود مسجل.', ephemeral: true });
+      if (modEntry.modPassword !== password) return interaction.reply({ content: '❌ كلمة المرور خاطئة.', ephemeral: true });
+      modEntry.lastLogin = new Date();
+      await modEntry.save();
+      const config = await getGuildConfig(guildId);
+      const channel = config.modLoginChannel ? interaction.guild.channels.cache.get(config.modLoginChannel) : null;
+      if (channel) await channel.send(`🔐 **${interaction.user}** سجل الدخول كمود.`);
+      await interaction.reply({ content: '✅ تم تسجيل الدخول بنجاح.', ephemeral: true });
+      return;
+    }
+
+    // ----- مودال الاقتراح -----
+    if (interaction.isButton() && interaction.customId === 'suggest_modal') {
+      const modal = new ModalBuilder()
+        .setCustomId('suggest_modal_submit')
+        .setTitle('📝 تقديم اقتراح')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('suggest_title').setLabel('عنوان الاقتراح').setStyle(TextInputStyle.Short).setRequired(true)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('suggest_desc').setLabel('تفاصيل الاقتراح').setStyle(TextInputStyle.Paragraph).setRequired(true)
+          )
+        );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'suggest_modal_submit') {
+      const title = interaction.fields.getTextInputValue('suggest_title');
+      const desc = interaction.fields.getTextInputValue('suggest_desc');
+      const config = await getGuildConfig(guildId);
+      if (!config.suggestionsChannel) return interaction.reply({ content: '⚠️ لم يتم تعيين قناة للاقتراحات.', ephemeral: true });
+      const channel = interaction.guild.channels.cache.get(config.suggestionsChannel);
+      if (!channel) return interaction.reply({ content: '❌ قناة الاقتراحات غير موجودة.', ephemeral: true });
+      const color = parseInt(config.suggestionsColor?.replace('#', '') || '2b2d31', 16);
+      const embed = new EmbedBuilder()
+        .setTitle(`💡 ${title}`)
+        .setDescription(desc)
+        .setColor(color)
+        .setTimestamp()
+        .setFooter({ text: `بواسطة ${interaction.user.tag} | ${interaction.user.id}` })
+        .setThumbnail(interaction.user.displayAvatarURL());
+      if (config.suggestionsImage) embed.setImage(config.suggestionsImage);
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('suggest_accept').setLabel('✅ قبول').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('suggest_reject').setLabel('❌ رفض').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('suggest_comment').setLabel('💬 تعليق').setStyle(ButtonStyle.Secondary)
+      );
+      await channel.send({ content: `📩 اقتراح جديد من ${interaction.user}`, embeds: [embed], components: [row] });
+      await interaction.reply({ content: '✅ تم إرسال اقتراحك بنجاح!', ephemeral: true });
+      return;
+    }
+
+    // ----- أزرار الاقتراحات (قبول، رفض، تعليق) -----
+    if (interaction.isButton() && ['suggest_accept', 'suggest_reject', 'suggest_comment'].includes(interaction.customId)) {
+      if (!(await hasPermission(interaction.member, interaction.guild.id)))
+        return interaction.reply({ content: '❌ هذا الزر للمشرفين فقط.', ephemeral: true });
+      const msg = interaction.message;
+      const embed = msg.embeds[0];
+      if (!embed) return interaction.reply({ content: '❌ لا يوجد اقتراح.', ephemeral: true });
+      let newEmbed = EmbedBuilder.from(embed);
+      let action = '';
+      if (interaction.customId === 'suggest_accept') {
+        action = '✅ تم قبول الاقتراح';
+        newEmbed.setColor(0x2b2d31).setFooter({ text: `قبل بواسطة ${interaction.user.tag} | ${new Date().toISOString()}` });
+      } else if (interaction.customId === 'suggest_reject') {
+        action = '❌ تم رفض الاقتراح';
+        newEmbed.setColor(0x2b2d31).setFooter({ text: `رفض بواسطة ${interaction.user.tag} | ${new Date().toISOString()}` });
+      } else if (interaction.customId === 'suggest_comment') {
+        const modal = new ModalBuilder()
+          .setCustomId('suggest_comment_modal')
+          .setTitle('💬 تعليق على الاقتراح')
+          .addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder().setCustomId('comment_text').setLabel('التعليق').setStyle(TextInputStyle.Paragraph).setRequired(true)
+            )
+          );
+        await interaction.showModal(modal);
+        return;
+      }
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('suggest_comment').setLabel('💬 تعليق').setStyle(ButtonStyle.Secondary)
+      );
+      await interaction.update({ embeds: [newEmbed], components: [row] });
+      await interaction.followUp({ content: `📌 ${action} بواسطة ${interaction.user}`, ephemeral: false });
+      return;
+    }
+
+    // ----- مودال التعليق على الاقتراح -----
+    if (interaction.isModalSubmit() && interaction.customId === 'suggest_comment_modal') {
+      const comment = interaction.fields.getTextInputValue('comment_text');
+      const msg = interaction.message;
+      const embed = msg.embeds[0];
+      if (!embed) return interaction.reply({ content: '❌ لا يوجد اقتراح.', ephemeral: true });
+      const newEmbed = EmbedBuilder.from(embed);
+      newEmbed.addFields({ name: '💬 تعليق من الإدارة', value: comment });
+      newEmbed.setColor(0x2b2d31).setFooter({ text: `علق بواسطة ${interaction.user.tag} | ${new Date().toISOString()}` });
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('suggest_accept').setLabel('✅ قبول').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('suggest_reject').setLabel('❌ رفض').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('suggest_comment').setLabel('💬 تعليق').setStyle(ButtonStyle.Secondary)
+      );
+      await interaction.update({ embeds: [newEmbed], components: [row] });
+      await interaction.followUp({ content: `💬 تم إضافة تعليق بواسطة ${interaction.user}`, ephemeral: false });
+      return;
+    }
+
+    // ----- قائمة التذاكر -----
+    if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_menu') {
+      await interaction.deferReply({ ephemeral: true });
+      const selected = interaction.values[0];
+      const settings = await getTicketSettings(guildId);
+      const section = settings.sections.find(s => s.name === selected);
+      if (!section) return interaction.editReply({ content: '❌ القسم غير موجود.' });
+      const ticketName = `تذكرة-${interaction.user.username}`.slice(0, 32);
+      try {
+        const channel = await interaction.guild.channels.create({
+          name: ticketName,
+          type: ChannelType.GuildText,
+          permissionOverwrites: [
+            { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+            { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
+            { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] }
+          ]
+        });
+        const embed = new EmbedBuilder()
+          .setTitle(`🎫 تذكرة - ${selected}`)
+          .setDescription(`مرحباً ${interaction.user}!\nالقسم: **${selected}**\nيرجى شرح مشكلتك.`)
+          .setColor(0x2b2d31)
+          .setTimestamp();
+        const generalImage = getGeneralImage(interaction.guild, await getGuildConfig(guildId));
+        if (generalImage) embed.setImage(generalImage);
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('close_ticket').setLabel('🔒 إغلاق التذكرة').setStyle(ButtonStyle.Secondary)
+        );
+        await channel.send({ content: `${interaction.user}`, embeds: [embed], components: [row] });
+        await interaction.editReply({ content: `✅ تم إنشاء تذكرتك: ${channel}` });
+      } catch (error) {
+        await interaction.editReply({ content: '❌ حدث خطأ في إنشاء التذكرة.' });
+      }
+      return;
+    }
+
+    // ----- زر إغلاق التذكرة -----
+    if (interaction.isButton() && interaction.customId === 'close_ticket') {
+      const channel = interaction.channel;
+      if (!channel.name.startsWith('تذكرة-')) return interaction.reply({ content: '⚠️ هذه ليست قناة تذكرة.', ephemeral: true });
+      await interaction.reply({ content: '🔒 جاري إغلاق التذكرة...', ephemeral: true });
+      setTimeout(async () => { await channel.delete().catch(() => {}); }, 3000);
+      return;
+    }
+
+    // ----- زر تغيير الاسم -----
+    if (interaction.isButton() && interaction.customId === 'open_name_modal') {
+      const userId = interaction.user.id;
+      // يمكنك إضافة كول داون هنا إذا أردت
+      const modal = new ModalBuilder()
+        .setCustomId('name_change_modal')
+        .setTitle('تغيير الاسم')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('new_name').setLabel('الاسم الجديد').setStyle(TextInputStyle.Short).setRequired(true).setMinLength(2).setMaxLength(32)
+          )
+        );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    // ----- مودال تغيير الاسم -----
+    if (interaction.isModalSubmit() && interaction.customId === 'name_change_modal') {
+      const newName = interaction.fields.getTextInputValue('new_name');
+      if (newName.length < 2 || newName.length > 32) return interaction.reply({ content: '⚠️ الاسم يجب أن يكون بين 2 و 32 حرفاً.', ephemeral: true });
+      try {
+        const oldName = interaction.member.displayName;
+        await interaction.member.setNickname(newName);
+        await setNameCooldown(interaction.user.id);
+        await interaction.reply({ content: `✅ تم تغيير اسمك إلى **${newName}**`, ephemeral: true });
+        await logToChannel(interaction.guild.id, { title: '✏️ تغيير اسم', color: 0x2b2d31, description: `**المستخدم:** ${interaction.user}\n**الاسم القديم:** ${oldName}\n**الاسم الجديد:** ${newName}`, footer: 'تغيير الاسم' });
+      } catch (error) { await interaction.reply({ content: '❌ لا أملك صلاحية تغيير اسمك.', ephemeral: true }); }
+      return;
+    }
+
+    // ----- رتب الإشعارات (أزرار) -----
+    if (interaction.isButton() && ['role_game', 'role_event', 'role_ajr'].includes(interaction.customId)) {
+      const roleMap = { role_game: 'Game Notice', role_event: 'Event Notice', role_ajr: 'Ajr Notice' };
+      const roleName = roleMap[interaction.customId];
+      const role = interaction.guild.roles.cache.find(r => r.name === roleName);
+      if (!role) return interaction.reply({ content: `❌ رتبة "${roleName}" غير موجودة.`, ephemeral: true });
+      const member = interaction.member;
+      if (member.roles.cache.has(role.id)) {
+        await member.roles.remove(role);
+        await interaction.reply({ content: `✅ تم إزالة رتبة ${roleName}.`, ephemeral: true });
+      } else {
+        await member.roles.add(role);
+        await interaction.reply({ content: `✅ تم منحك رتبة ${roleName}.`, ephemeral: true });
+      }
+      return;
+    }
+
+  } catch (error) {
+    console.error('❌ خطأ في معالج التفاعلات:', error);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: '❌ حدث خطأ.', ephemeral: true }).catch(() => {});
+    }
+  }
+});
+
+// ============================================================
+// ========== تشغيل البوت ==========
+// ============================================================
+
+client.login(TOKEN).catch((err) => {
+  console.error('❌ فشل تسجيل الدخول:', err);
+  process.exit(1);
+});
