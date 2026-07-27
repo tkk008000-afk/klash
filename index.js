@@ -1164,7 +1164,6 @@ client.on('messageCreate', async (message) => {
 
       // التذاكر
       if (sub === 'تذكرة') {
-        // (تم تضمينها بالكامل في النسخة النهائية)
         const settings = await getTicketSettings(guildId);
         const action = args[1]?.toLowerCase();
         const actionValue = args.slice(2).join(' ');
@@ -1176,8 +1175,59 @@ client.on('messageCreate', async (message) => {
           await message.channel.send({ embeds: [embed] });
           return;
         }
-        // ... (باقي إدارة التذاكر)
-        await message.reply('⚠️ تم تبسيط إدارة التذاكر، استخدم الأوامر المخصصة.');
+        if (action === 'إضافة') {
+          const parts = actionValue.match(/^(.+?)\s+<@&(\d+)>\s*(\S+)?$/);
+          if (!parts) { await message.reply('⚠️ الصيغة: `!تعيين تذكرة إضافة [الاسم] @دور :ايموجي:`'); return; }
+          const sectionName = parts[1].trim();
+          const roleId = parts[2];
+          const emoji = parts[3] || '📌';
+          if (settings.sections.find(s => s.name === sectionName)) { await message.reply(`⚠️ قسم "${sectionName}" موجود بالفعل.`); return; }
+          settings.sections.push({ name: sectionName, roleId, emoji });
+          await saveTicketSettings(guildId, settings);
+          await logToChannel(guildId, { title: '🎫 إضافة قسم تذكرة', color: 0x2b2d31, description: `**${message.author}** أضاف قسم **${sectionName}** مع دور <@&${roleId}> وإيموجي ${emoji}` });
+          await message.reply(`✅ تم إضافة قسم **${sectionName}** مع دور <@&${roleId}> وإيموجي ${emoji}.`);
+          return;
+        }
+        if (action === 'تعيين_ايموجي') {
+          const parts = actionValue.match(/^(.+?)\s+(\S+)$/);
+          if (!parts) { await message.reply('⚠️ الصيغة: `!تعيين تذكرة تعيين_ايموجي [الاسم] :ايموجي:`'); return; }
+          const sectionName = parts[1].trim();
+          const emoji = parts[2];
+          const section = settings.sections.find(s => s.name === sectionName);
+          if (!section) { await message.reply(`⚠️ قسم "${sectionName}" غير موجود.`); return; }
+          section.emoji = emoji;
+          await saveTicketSettings(guildId, settings);
+          await logToChannel(guildId, { title: '🎨 تعيين إيموجي قسم', color: 0x2b2d31, description: `**${message.author}** عيّن الإيموجي ${emoji} لقسم **${sectionName}**` });
+          await message.reply(`✅ تم تعيين الإيموجي ${emoji} لقسم **${sectionName}**.`);
+          return;
+        }
+        if (action === 'حذف') {
+          const sectionName = actionValue.trim();
+          const index = settings.sections.findIndex(s => s.name === sectionName);
+          if (index === -1) { await message.reply(`⚠️ قسم "${sectionName}" غير موجود.`); return; }
+          settings.sections.splice(index, 1);
+          await saveTicketSettings(guildId, settings);
+          await logToChannel(guildId, { title: '🗑️ حذف قسم تذكرة', color: 0x2b2d31, description: `**${message.author}** حذف قسم **${sectionName}**` });
+          await message.reply(`✅ تم حذف قسم **${sectionName}**.`);
+          return;
+        }
+        if (action === 'نص') {
+          if (!actionValue) { await message.reply('⚠️ أدخل النص الجديد.'); return; }
+          settings.text = actionValue;
+          await saveTicketSettings(guildId, settings);
+          await logToChannel(guildId, { title: '📝 تغيير نص التذاكر', color: 0x2b2d31, description: `**${message.author}** غيّر نص التذاكر.` });
+          await message.reply(`✅ تم تغيير نص التذاكر:\n${actionValue}`);
+          return;
+        }
+        if (action === 'صورة') {
+          if (!actionValue) { await message.reply('⚠️ أدخل رابط الصورة.'); return; }
+          settings.image = actionValue;
+          await saveTicketSettings(guildId, settings);
+          await logToChannel(guildId, { title: '🖼️ تغيير صورة التذاكر', color: 0x2b2d31, description: `**${message.author}** غيّر صورة التذاكر.` });
+          await message.reply(`✅ تم تغيير صورة التذاكر: ${actionValue}`);
+          return;
+        }
+        await message.reply('⚠️ أمر غير معروف. استخدم `!تعيين تذكرة` لعرض التعليمات.');
         return;
       }
 
