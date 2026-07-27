@@ -1171,6 +1171,7 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
+      // الترحيب
       if (sub === 'ترحيب') {
         const channel = message.mentions.channels.first();
         if (!channel) {
