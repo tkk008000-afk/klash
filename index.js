@@ -21,7 +21,8 @@ app.listen(port, () => console.log(`🌐 خادم الويب على المنفذ
 // ========== متغيرات البيئة ==========
 const TOKEN = process.env.DISCORD_TOKEN;
 const MONGO_URL = process.env.MONGO_URL;
-const OWNER_ID = process.env.OWNER_ID || null;
+// تعيين المالك مباشرة، مع إمكانية تجاوزه عبر متغير البيئة
+const OWNER_ID = process.env.OWNER_ID || '1507841424186675220';
 
 if (!TOKEN || !MONGO_URL) {
   console.error('❌ تأكد من وجود DISCORD_TOKEN و MONGO_URL');
@@ -80,7 +81,7 @@ const UserSchema = new mongoose.Schema({
   xp: { type: Number, default: 0 },
   level: { type: Number, default: 0 },
   messages: { type: Number, default: 0 },
-  // عملة KL (تحل محل OG)
+  // عملة KL
   kl: { type: Number, default: 0 },
   lastDaily: Date,
   // إدارة المهام
@@ -245,12 +246,15 @@ async function hasPermission(member, guildId) {
 }
 
 async function isSeniorAdmin(member, guildId) {
+  // المالك يمرر تلقائياً
+  if (member.id === OWNER_ID) return true;
   const config = await getGuildConfig(guildId);
   if (!config.seniorAdminRole) return false;
-  return member.roles.cache.has(config.seniorAdminRole) || member.id === OWNER_ID;
+  return member.roles.cache.has(config.seniorAdminRole);
 }
 
 async function isJuniorAdmin(member, guildId) {
+  if (member.id === OWNER_ID) return true;
   const config = await getGuildConfig(guildId);
   if (!config.juniorAdminRole) return false;
   return member.roles.cache.has(config.juniorAdminRole) || await isSeniorAdmin(member, guildId);
@@ -403,7 +407,7 @@ const client = new Client({
 
 client.once('ready', () => {
   console.log(`✅ البوت جاهز باسم ${client.user.tag}`);
-  if (OWNER_ID) console.log(`👑 صاحب البوت: ${OWNER_ID}`);
+  console.log(`👑 صاحب البوت: ${OWNER_ID}`);
   client.user.setActivity('The Kingdom Never Falls.', { type: ActivityType.Watching });
 });
 
@@ -1020,6 +1024,7 @@ client.on('messageCreate', async (message) => {
         .setTitle('📖 قائمة الأوامر')
         .setColor(0x2b2d31)
         .addFields(
+          { name: '👑 نظام التحكم', value: '`متحكم @شخص` `الغاء_متحكم @شخص` `قائمة_المتحكمين`', inline: false },
           { name: '📋 المهام', value: '`!لوحة_المهام` (للمدراء العلويين)', inline: false },
           { name: '📅 الإجازات', value: '`!طلب_اجازة` (للإداريين)\n`!الموافقة_على_الاجازات` (لمسؤول الإجازات)', inline: false },
           { name: '💰 العملة', value: '`!رصيدي`\n`!مصرف` (راتب يومي)\n`!اعطاء_عملات` و `!سحب_عملات` (للمتحكمين)', inline: false },
@@ -1073,8 +1078,8 @@ client.on('messageCreate', async (message) => {
     }
 
     // المتحكمين
-    if (cmd === 'متحكم') {
-      if (!OWNER_ID || message.author.id !== OWNER_ID) return message.reply('❌ هذا الأمر للمالك فقط.');
+    if (cmd === 'متحكم' || cmd === 'تعيين_متحكم') {
+      if (message.author.id !== OWNER_ID) return message.reply('❌ هذا الأمر للمالك فقط.');
       const member = message.mentions.members.first();
       if (!member) return message.reply('⚠️ منشن العضو.');
       if (await isController(member.id, guildId)) return message.reply(`⚠️ ${member} متحكم بالفعل.`);
@@ -1084,7 +1089,7 @@ client.on('messageCreate', async (message) => {
     }
 
     if (cmd === 'الغاء_متحكم') {
-      if (!OWNER_ID || message.author.id !== OWNER_ID) return message.reply('❌ هذا الأمر للمالك فقط.');
+      if (message.author.id !== OWNER_ID) return message.reply('❌ هذا الأمر للمالك فقط.');
       const member = message.mentions.members.first();
       if (!member) return message.reply('⚠️ منشن العضو.');
       if (!(await isController(member.id, guildId))) return message.reply(`⚠️ ${member} ليس متحكماً.`);
@@ -1106,18 +1111,225 @@ client.on('messageCreate', async (message) => {
     // ===== أوامر الإشراف (تُحذف بعد 5 ثوانٍ) =====
     // ============================================================
 
-    if (cmd === 'حظر' || cmd === 'طرد' || cmd === 'كتم' || cmd === 'فك_كتم' ||
-        cmd === 'تحذير' || cmd === 'ابطال_تحذيرات' || cmd === 'مسح' ||
-        cmd === 'قفل' || cmd === 'فتح' || cmd === 'نقل_كل' ||
-        cmd === 'حذف_قناة' || cmd === 'تغيير_اسم_قناة') {
-      // سيتم تنفيذ الأوامر مع deleteAfter
-      // أقوم بتضمين الأمر حظر كمثال، والباقي بنفس المنطق
-      // (بما أن الكود طويل، سأضع الأوامر الرئيسية فقط مع الإشارة إلى أن الباقي موجود)
-      // لكن لضمان اكتمال الكود، سأكتب جميع الأوامر الإشرافية
+    // حظر
+    if (cmd === 'حظر') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      const member = message.mentions.members.first();
+      if (!member) { sentReply = await message.reply('⚠️ منشن العضو.'); deleteAfter(sentReply); return; }
+      const reason = args.join(' ') || 'لا يوجد سبب';
+      await member.ban({ reason });
+      const embed = new EmbedBuilder().setTitle('✅ تم الحظر').setColor(0x2b2d31).setDescription(`${member.user.tag} تم حظره بسبب: ${reason}`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
     }
 
-    // (بما أن الأوامر الإشرافية طويلة جداً، سأضعها في الكود النهائي المرفق، لكن هنا للاختصار)
-    // أضمن جميع الأوامر الإشرافية في النسخة النهائية.
+    // طرد
+    if (cmd === 'طرد') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      const member = message.mentions.members.first();
+      if (!member) { sentReply = await message.reply('⚠️ منشن العضو.'); deleteAfter(sentReply); return; }
+      const reason = args.join(' ') || 'لا يوجد سبب';
+      await member.kick(reason);
+      const embed = new EmbedBuilder().setTitle('✅ تم الطرد').setColor(0x2b2d31).setDescription(`${member.user.tag} تم طرده بسبب: ${reason}`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
+    }
+
+    // كتم
+    if (cmd === 'كتم') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      const member = message.mentions.members.first();
+      if (!member) { sentReply = await message.reply('⚠️ منشن العضو.'); deleteAfter(sentReply); return; }
+      const reason = args.join(' ') || 'لا يوجد سبب';
+      let muteRole = message.guild.roles.cache.find(r => r.name === 'Muted');
+      if (!muteRole) {
+        muteRole = await message.guild.roles.create({ name: 'Muted', permissions: [] });
+        message.guild.channels.cache.forEach(ch => ch.permissionOverwrites.create(muteRole, { SendMessages: false }).catch(() => {}));
+      }
+      await member.roles.add(muteRole, reason);
+      const embed = new EmbedBuilder().setTitle('🔇 تم الكتم').setColor(0x2b2d31).setDescription(`${member.user.tag} تم كتمه بسبب: ${reason}`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
+    }
+
+    // فك_كتم
+    if (cmd === 'فك_كتم') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      const member = message.mentions.members.first();
+      if (!member) { sentReply = await message.reply('⚠️ منشن العضو.'); deleteAfter(sentReply); return; }
+      const muteRole = message.guild.roles.cache.find(r => r.name === 'Muted');
+      if (!muteRole) { sentReply = await message.reply('⚠️ لا يوجد دور Muted.'); deleteAfter(sentReply); return; }
+      await member.roles.remove(muteRole);
+      const embed = new EmbedBuilder().setTitle('🔊 تم فك الكتم').setColor(0x2b2d31).setDescription(`${member.user.tag} تم فك الكتم عنه.`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
+    }
+
+    // تحذير
+    if (cmd === 'تحذير') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      const member = message.mentions.members.first();
+      if (!member) { sentReply = await message.reply('⚠️ منشن العضو.'); deleteAfter(sentReply); return; }
+      const reason = args.join(' ') || 'لا يوجد سبب';
+      const count = await addWarn(guildId, member.id, reason, message.author.id);
+      const embed = new EmbedBuilder().setTitle('⚠️ تحذير').setColor(0x2b2d31).setDescription(`${member.user.tag} تم تحذيره بسبب: ${reason}\nإجمالي التحذيرات: ${count}`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
+    }
+
+    // ابطال_تحذيرات
+    if (cmd === 'ابطال_تحذيرات') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      const member = message.mentions.members.first();
+      if (!member) { sentReply = await message.reply('⚠️ منشن العضو.'); deleteAfter(sentReply); return; }
+      await clearWarns(guildId, member.id);
+      const embed = new EmbedBuilder().setTitle('✅ تم إبطال التحذيرات').setColor(0x2b2d31).setDescription(`تم إلغاء كل تحذيرات ${member.user.tag}.`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
+    }
+
+    // مسح
+    if (cmd === 'مسح') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      let amount = parseInt(args[0]) || 5;
+      if (amount > 100) amount = 100;
+      const deleted = await message.channel.bulkDelete(amount, true).catch(() => {});
+      const count = deleted ? deleted.size : 0;
+      sentReply = await message.channel.send(`🗑️ تم مسح ${count} رسالة.`);
+      deleteAfter(sentReply);
+      return;
+    }
+
+    // قفل
+    if (cmd === 'قفل') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      await message.channel.permissionOverwrites.create(message.guild.id, { SendMessages: false });
+      const embed = new EmbedBuilder().setTitle('🔒 تم قفل القناة').setColor(0x2b2d31).setDescription(`تم قفل ${message.channel}`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
+    }
+
+    // فتح
+    if (cmd === 'فتح') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      await message.channel.permissionOverwrites.delete(message.guild.id);
+      const embed = new EmbedBuilder().setTitle('🔓 تم فتح القناة').setColor(0x2b2d31).setDescription(`تم فتح ${message.channel}`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
+    }
+
+    // نقل_كل
+    if (cmd === 'نقل_كل') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      const from = message.mentions.channels.first();
+      const to = message.mentions.channels.last();
+      if (!from || !to || from.type !== ChannelType.GuildVoice || to.type !== ChannelType.GuildVoice) {
+        sentReply = await message.reply('⚠️ منشن رومين صوتيين: `!نقل_كل #من #إلى`');
+        deleteAfter(sentReply);
+        return;
+      }
+      const members = from.members.filter(m => !m.user.bot);
+      let count = 0;
+      for (const m of members) { await m.voice.setChannel(to).catch(() => {}); count++; }
+      const embed = new EmbedBuilder().setTitle('🔊 تم نقل الأعضاء').setColor(0x2b2d31).setDescription(`تم نقل ${count} عضو من ${from} إلى ${to}`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
+    }
+
+    // حذف_قناة
+    if (cmd === 'حذف_قناة') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      const channel = message.mentions.channels.first();
+      if (!channel) { sentReply = await message.reply('⚠️ منشن القناة.'); deleteAfter(sentReply); return; }
+      const channelName = channel.name;
+      await channel.delete();
+      const embed = new EmbedBuilder().setTitle('🗑️ تم حذف القناة').setColor(0x2b2d31).setDescription(`تم حذف ${channelName}`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
+    }
+
+    // تغيير_اسم_قناة
+    if (cmd === 'تغيير_اسم_قناة') {
+      if (!(await hasPermission(message.member, guildId))) {
+        sentReply = await message.reply('❌ تحتاج صلاحية متحكم.');
+        deleteAfter(sentReply);
+        return;
+      }
+      const channel = message.mentions.channels.first();
+      if (!channel) { sentReply = await message.reply('⚠️ منشن القناة.'); deleteAfter(sentReply); return; }
+      const newName = args.slice(1).join(' ');
+      if (!newName) { sentReply = await message.reply('⚠️ أدخل الاسم الجديد.'); deleteAfter(sentReply); return; }
+      await channel.setName(newName);
+      const embed = new EmbedBuilder().setTitle('✏️ تم تغيير اسم القناة').setColor(0x2b2d31).setDescription(`تم تغيير اسم القناة إلى ${newName}`);
+      if (generalImage) embed.setImage(generalImage);
+      sentReply = await message.channel.send({ embeds: [embed] });
+      deleteAfter(sentReply);
+      return;
+    }
 
     // ============================================================
     // ===== الأوامر الأخرى (بانل، اقتراحات، رتب، إلخ) =====
@@ -1218,13 +1430,139 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // أوامر الأوتو لاين والردود التلقائية (مختصرة)
-    // سيتم تضمينها كاملة في النسخة النهائية.
+    // ردود تلقائية
+    if (cmd === 'رد_تلقائي') {
+      if (!(await hasPermission(message.member, guildId))) {
+        await message.reply('❌ تحتاج صلاحية متحكم.');
+        return;
+      }
+      const keyword = args[0];
+      const reply = args.slice(1).join(' ');
+      if (!keyword || !reply) {
+        await message.reply('⚠️ الصيغة: `!رد_تلقائي [الكلمة] [الرد]`');
+        return;
+      }
+      const added = await addAutoReply(guildId, keyword, reply);
+      await logToChannel(guildId, { title: '💬 إضافة رد تلقائي', color: 0x2b2d31, description: `**${message.author}** أضاف رداً تلقائياً:\n**${keyword}** → ${reply}` });
+      const embed = new EmbedBuilder()
+        .setTitle(added ? '✅ تم إضافة رد تلقائي' : '🔄 تم تحديث رد تلقائي')
+        .setColor(0x2b2d31)
+        .setDescription(`**الكلمة:** ${keyword}\n**الرد:** ${reply}`)
+        .setFooter({ text: 'سيرد البوت تلقائياً عند كتابة هذه الكلمة.' });
+      if (generalImage) embed.setImage(generalImage);
+      await message.channel.send({ embeds: [embed] });
+      return;
+    }
 
-    // ============================================================
-    // ===== إيقاف البوت =====
-    // ============================================================
+    if (cmd === 'رد_تلقائي_صورة') {
+      if (!(await hasPermission(message.member, guildId))) {
+        await message.reply('❌ تحتاج صلاحية متحكم.');
+        return;
+      }
+      const keyword = args[0];
+      const image = args[args.length - 1];
+      const reply = args.slice(1, -1).join(' ');
+      if (!keyword || !reply || !image) {
+        await message.reply('⚠️ الصيغة: `!رد_تلقائي_صورة [الكلمة] [الرد] [رابط_الصورة]`');
+        return;
+      }
+      if (!image.match(/^https?:\/\/.+/)) {
+        await message.reply('⚠️ الرابط غير صالح.');
+        return;
+      }
+      const added = await addAutoReply(guildId, keyword, reply, image);
+      await logToChannel(guildId, { title: '💬 إضافة رد تلقائي مع صورة', color: 0x2b2d31, description: `**${message.author}** أضاف رداً تلقائياً مع صورة:\n**${keyword}** → ${reply}` });
+      const embed = new EmbedBuilder()
+        .setTitle(added ? '✅ تم إضافة رد تلقائي مع صورة' : '🔄 تم تحديث رد تلقائي مع صورة')
+        .setColor(0x2b2d31)
+        .setDescription(`**الكلمة:** ${keyword}\n**الرد:** ${reply}`)
+        .setImage(image)
+        .setFooter({ text: 'سيرد البوت مع الصورة تلقائياً.' });
+      if (generalImage) embed.setThumbnail(generalImage);
+      await message.channel.send({ embeds: [embed] });
+      return;
+    }
 
+    if (cmd === 'حذف_رد_تلقائي') {
+      if (!(await hasPermission(message.member, guildId))) {
+        await message.reply('❌ تحتاج صلاحية متحكم.');
+        return;
+      }
+      const keyword = args.join(' ');
+      if (!keyword) {
+        await message.reply('⚠️ اكتب الكلمة المفتاحية التي تريد حذفها.');
+        return;
+      }
+      const removed = await removeAutoReply(guildId, keyword);
+      if (!removed) {
+        await message.reply(`⚠️ لا يوجد رد تلقائي للكلمة "${keyword}".`);
+        return;
+      }
+      await logToChannel(guildId, { title: '🗑️ حذف رد تلقائي', color: 0x2b2d31, description: `**${message.author}** حذف الرد التلقائي للكلمة **${keyword}**` });
+      const embed = new EmbedBuilder()
+        .setTitle('🗑️ تم حذف الرد التلقائي')
+        .setColor(0x2b2d31)
+        .setDescription(`تم حذف الرد التلقائي للكلمة: **${keyword}**`);
+      if (generalImage) embed.setImage(generalImage);
+      await message.channel.send({ embeds: [embed] });
+      return;
+    }
+
+    if (cmd === 'عرض_الردود') {
+      const replies = await getAutoReplies(guildId);
+      if (!replies.length) {
+        await message.reply('📭 لا توجد ردود تلقائية في هذا السيرفر.');
+        return;
+      }
+      const list = replies.map((r, i) => `${i+1}. **${r.keyword}** → ${r.reply}${r.image ? ' (🖼️)' : ''}`).join('\n');
+      const embed = new EmbedBuilder()
+        .setTitle('💬 قائمة الردود التلقائية')
+        .setColor(0x2b2d31)
+        .setDescription(list)
+        .setFooter({ text: `عدد الردود: ${replies.length}` });
+      if (generalImage) embed.setImage(generalImage);
+      await message.channel.send({ embeds: [embed] });
+      return;
+    }
+
+    // قول، ايمبد، اعلان
+    if (cmd === 'قول') {
+      const text = args.join(' ');
+      if (!text) { await message.reply('⚠️ اكتب النص.'); return; }
+      await message.channel.send(text);
+      return;
+    }
+
+    if (cmd === 'ايمبد') {
+      const fullText = args.join(' ');
+      if (!fullText) { await message.reply('⚠️ الصيغة: `!ايمبد [العنوان] ، [الوصف]`'); return; }
+      const parts = fullText.split(/[،,]\s*/).map(s => s.trim());
+      let title = 'بدون عنوان', description = fullText;
+      if (parts.length >= 2) { title = parts[0]; description = parts.slice(1).join(' ، '); }
+      const embed = new EmbedBuilder().setTitle(title).setDescription(description).setColor(0x2b2d31).setTimestamp();
+      const imageMatch = description.match(/(https?:\/\/[^\s]+\.(?:png|jpg|jpeg|gif|webp))/i);
+      if (imageMatch) { embed.setImage(imageMatch[1]); embed.setDescription(description.replace(imageMatch[1], '').trim() || 'بدون وصف'); }
+      if (generalImage) embed.setThumbnail(generalImage);
+      await message.channel.send({ embeds: [embed] });
+      return;
+    }
+
+    if (cmd === 'اعلان') {
+      if (!(await hasPermission(message.member, guildId))) {
+        await message.reply('❌ تحتاج صلاحية متحكم.');
+        return;
+      }
+      let mentionType = 'everyone';
+      let text = args.join(' ');
+      if (args[0]?.toLowerCase() === 'here') { mentionType = 'here'; text = args.slice(1).join(' '); }
+      if (!text) { await message.reply('⚠️ اكتب نص الإعلان.'); return; }
+      const embed = new EmbedBuilder().setTitle('📢 إعلان').setDescription(text).setColor(0x2b2d31).setTimestamp().setFooter({ text: `بواسطة ${message.author.tag}` });
+      if (generalImage) embed.setImage(generalImage);
+      await message.channel.send({ content: mentionType === 'everyone' ? '@everyone' : '@here', embeds: [embed] });
+      return;
+    }
+
+    // إيقاف
     if (cmd === 'إيقاف') {
       if (message.author.id !== OWNER_ID) return message.reply('❌ هذا الأمر للمالك فقط.');
       sentReply = await message.reply('🛑 جاري الإيقاف...');
