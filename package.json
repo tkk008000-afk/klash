@@ -1,8 +1,6 @@
 {
   "name": "management-bot",
   "version": "1.0.0",
-  "description": "Advanced Discord Bot with Tasks, Leaves, Store, Currency, and Mod Login",
-  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
