@@ -1,0 +1,16 @@
+{
+  "name": "management-bot",
+  "version": "1.0.0",
+  "description": "Advanced Management Bot - No OG, Only KL",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "@napi-rs/canvas": "^0.1.44",
+    "express": "^4.18.2",
+    "mongoose": "^8.0.0",
+    "instagram-url-direct": "^1.0.0"
+  }
+}
