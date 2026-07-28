@@ -2481,4 +2481,161 @@ client.on('interactionCreate', async (interaction) => {
       }
       const roleId = interaction.fields.getTextInputValue('product_role').trim();
       const price = parseInt(interaction.fields.getTextInputValue('product_price'));
-      const desc = interaction.fields.get
+      const desc = interaction.fields.getTextInputValue('product_desc') || 'لا يوجد وصف';
+      if (!roleId || isNaN(price) || price < 1) {
+        return interaction.reply({ content: '⚠️ بيانات غير صحيحة. تأكد من المعرف والسعر.', ephemeral: true });
+      }
+      const role = interaction.guild.roles.cache.get(roleId);
+      if (!role) {
+        return interaction.reply({ content: '❌ الرتبة غير موجودة.', ephemeral: true });
+      }
+      await addStoreItem(guildId, roleId, price, desc);
+      await interaction.reply({ content: `✅ تم إضافة المنتج **${role.name}** بسعر **${price} KL** بنجاح.`, ephemeral: true });
+      await logToChannel(guildId, {
+        title: '🛒 إضافة منتج',
+        color: 0x2b2d31,
+        description: `**المنفذ:** ${interaction.user}\n**الرتبة:** ${role.name} (${roleId})\n**السعر:** ${price} KL\n**الوصف:** ${desc}`
+      });
+      return;
+    }
+
+    // ----- اختيار منتج من المتجر (إنشاء طلب) -----
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('store_buy_')) {
+      const itemId = interaction.values[0];
+      const item = await StoreItem.findById(itemId);
+      if (!item) {
+        return interaction.reply({ content: '❌ المنتج غير موجود.', ephemeral: true });
+      }
+      const role = interaction.guild.roles.cache.get(item.roleId);
+      if (!role) {
+        return interaction.reply({ content: '❌ الرتبة غير موجودة حالياً.', ephemeral: true });
+      }
+      // التحقق من أن المستخدم ليس لديه طلب معلق
+      const existing = await PendingPurchase.findOne({ guildId, userId: interaction.user.id, status: 'pending' });
+      if (existing) {
+        return interaction.reply({ content: '⚠️ لديك طلب شراء معلق بالفعل. انتظر حتى تتم معالجته.', ephemeral: true });
+      }
+      // إنشاء طلب الشراء
+      const purchase = await createPendingPurchase(guildId, interaction.user.id, item.roleId, role.name, item.price);
+      
+      // إرسال الطلب إلى قناة البائعين
+      const config = await getGuildConfig(guildId);
+      const storeChannel = config.storeChannel ? interaction.guild.channels.cache.get(config.storeChannel) : null;
+      if (!storeChannel) {
+        return interaction.reply({ content: '⚠️ لم يتم تعيين قناة المتجر بعد.', ephemeral: true });
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle('🛒 طلب شراء جديد')
+        .setColor(0x2b2d31)
+        .setDescription(`**المشتري:** ${interaction.user} (${interaction.user.id})\n**الرتبة:** ${role.name}\n**السعر:** ${item.price} KL\n**الوصف:** ${item.description || 'لا يوجد'}`)
+        .setTimestamp();
+      
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`store_approve_${purchase._id}`)
+          .setLabel('✅ تأكيد الشراء')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`store_reject_${purchase._id}`)
+          .setLabel('❌ رفض')
+          .setStyle(ButtonStyle.Danger)
+      );
+      
+      await storeChannel.send({ content: `<@&${config.sellerRole || ''}>`, embeds: [embed], components: [row] });
+      await interaction.reply({ content: `✅ تم إرسال طلب شراء **${role.name}** إلى البائعين.`, ephemeral: true });
+      return;
+    }
+
+    // ----- أزرار الموافقة على الشراء -----
+    if (interaction.isButton() && interaction.customId.startsWith('store_')) {
+      const parts = interaction.customId.split('_');
+      const action = parts[1];
+      const purchaseId = parts[2];
+      const purchase = await PendingPurchase.findById(purchaseId);
+      if (!purchase) {
+        return interaction.reply({ content: '❌ الطلب غير موجود.', ephemeral: true });
+      }
+      if (purchase.status !== 'pending') {
+        return interaction.reply({ content: '⚠️ تمت معالجة هذا الطلب مسبقاً.', ephemeral: true });
+      }
+      
+      const config = await getGuildConfig(guildId);
+      // التحقق من صلاحية البائع أو المتحكم
+      const isSeller = config.sellerRole && interaction.member.roles.cache.has(config.sellerRole);
+      const isAdmin = await hasPermission(interaction.member, guildId);
+      if (!isSeller && !isAdmin) {
+        return interaction.reply({ content: '❌ ليس لديك صلاحية البائع أو الإدارة.', ephemeral: true });
+      }
+
+      if (action === 'approve') {
+        const member = await interaction.guild.members.fetch(purchase.userId).catch(() => null);
+        if (!member) {
+          return interaction.reply({ content: '❌ المستخدم غير موجود في السيرفر.', ephemeral: true });
+        }
+        const role = interaction.guild.roles.cache.get(purchase.roleId);
+        if (!role) {
+          return interaction.reply({ content: '❌ الرتبة غير موجودة.', ephemeral: true });
+        }
+        // خصم العملات
+        const user = await getUser(guildId, purchase.userId);
+        if (user.kl < purchase.price) {
+          return interaction.reply({ content: `⚠️ رصيد المستخدم غير كافٍ. لديه ${user.kl} KL فقط.`, ephemeral: true });
+        }
+        user.kl -= purchase.price;
+        await user.save();
+        // منح الرتبة
+        await member.roles.add(role);
+        // تحديث حالة الطلب
+        purchase.status = 'completed';
+        await purchase.save();
+        
+        const embed = new EmbedBuilder()
+          .setTitle('✅ تم تأكيد الشراء')
+          .setColor(0x2b2d31)
+          .setDescription(`تم منح **${role.name}** لـ ${member}.\nالسعر: **${purchase.price} KL**\nالموافق: ${interaction.user}`)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed], ephemeral: false });
+        
+        try {
+          const dmEmbed = new EmbedBuilder()
+            .setTitle('🎉 تم شراء الرتبة بنجاح!')
+            .setDescription(`تم منحك رتبة **${role.name}** في **${interaction.guild.name}**.\nتم خصم **${purchase.price} KL** من رصيدك.`)
+            .setColor(0x2b2d31);
+          await member.send({ embeds: [dmEmbed] });
+        } catch (e) {}
+        
+        await logToChannel(guildId, {
+          title: '🛒 شراء رتبة',
+          color: 0x2b2d31,
+          description: `**المشتري:** ${member.user.tag}\n**الرتبة:** ${role.name}\n**السعر:** ${purchase.price} KL\n**الموافق:** ${interaction.user.tag}`
+        });
+        
+      } else if (action === 'reject') {
+        purchase.status = 'cancelled';
+        await purchase.save();
+        await interaction.reply({ content: `❌ تم رفض طلب شراء <@${purchase.userId}>.`, ephemeral: false });
+        try {
+          const userMember = await interaction.guild.members.fetch(purchase.userId);
+          await userMember.send(`❌ تم رفض طلب شراء الرتبة **${purchase.roleName}**.`);
+        } catch (e) {}
+      }
+      return;
+    }
+
+    // ----- (بقية معالجات التفاعلات الأخرى كالتذاكر والاقتراحات وتغيير الاسم الخ) -----
+    // ... (يمكن إضافتها إذا كانت مفقودة، ولكنها موجودة في الكود الأصلي ولم نُزلها)
+
+  } catch (error) {
+    console.error('❌ خطأ في معالج التفاعل:', error);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: '❌ حدث خطأ.', ephemeral: true }).catch(() => {});
+    }
+  }
+});
+
+// ============================================================
+// ========== تشغيل البوت ==========
+// ============================================================
+
+client.login(TOKEN);
