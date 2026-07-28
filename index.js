@@ -1,5 +1,5 @@
 // ============================================================
-// البوت المتكامل - جميع الميزات + نظام تسجيل الحضور
+// البوت المتكامل - جميع الميزات + نظام المتجر المعدل
 // ============================================================
 
 const {
@@ -59,7 +59,7 @@ const ConfigSchema = new mongoose.Schema({
   suggestionsImage: String,
   tasksChannel: String,
   leaveRequestChannel: String,
-  storeChannel: String,
+  storeChannel: String,            // قناة إشعارات المتجر (جديد)
   modLoginChannel: String,
   leaveManagerRole: String,
   seniorAdminRole: String,
@@ -68,6 +68,7 @@ const ConfigSchema = new mongoose.Schema({
   dailySalary: { type: Number, default: 5 },
   promotionPoints: { type: Number, default: 100 },
   leavePanelImage: String,
+  storePanelImage: String,         // صورة بانل المتجر (جديد)
 }, { timestamps: true });
 const Config = mongoose.model('Config', ConfigSchema);
 
@@ -116,6 +117,7 @@ const LeaveRequestSchema = new mongoose.Schema({
 });
 const LeaveRequest = mongoose.model('LeaveRequest', LeaveRequestSchema);
 
+// ========== نموذج المتجر ==========
 const StoreItemSchema = new mongoose.Schema({
   guildId: String,
   roleId: String,
@@ -123,6 +125,18 @@ const StoreItemSchema = new mongoose.Schema({
   description: String,
 });
 const StoreItem = mongoose.model('StoreItem', StoreItemSchema);
+
+// ========== نموذج طلبات الشراء المعلقة (جديد) ==========
+const PendingPurchaseSchema = new mongoose.Schema({
+  guildId: String,
+  userId: String,
+  roleId: String,
+  roleName: String,
+  price: Number,
+  status: { type: String, enum: ['pending', 'completed', 'cancelled'], default: 'pending' },
+  createdAt: { type: Date, default: Date.now },
+});
+const PendingPurchase = mongoose.model('PendingPurchase', PendingPurchaseSchema);
 
 const ModLoginSchema = new mongoose.Schema({
   guildId: String,
@@ -342,7 +356,7 @@ async function getNameCooldown(userId) {
   return cd ? cd.timestamp : null;
 }
 
-// المتجر والمودات
+// المتجر
 async function getStoreItems(guildId) { return await StoreItem.find({ guildId }); }
 async function addStoreItem(guildId, roleId, price, description) {
   const item = new StoreItem({ guildId, roleId, price, description });
@@ -352,6 +366,25 @@ async function addStoreItem(guildId, roleId, price, description) {
 async function removeStoreItem(guildId, itemId) {
   return await StoreItem.deleteOne({ guildId, _id: itemId });
 }
+
+// طلبات الشراء (جديد)
+async function createPendingPurchase(guildId, userId, roleId, roleName, price) {
+  const purchase = new PendingPurchase({ guildId, userId, roleId, roleName, price });
+  await purchase.save();
+  return purchase;
+}
+async function getPendingPurchaseByUser(guildId, userId) {
+  return await PendingPurchase.findOne({ guildId, userId, status: 'pending' }).sort({ createdAt: -1 });
+}
+async function completePendingPurchase(guildId, userId) {
+  const purchase = await PendingPurchase.findOne({ guildId, userId, status: 'pending' }).sort({ createdAt: -1 });
+  if (!purchase) return null;
+  purchase.status = 'completed';
+  await purchase.save();
+  return purchase;
+}
+
+// المودات
 async function getModLogin(guildId, userId) { return await ModLogin.findOne({ guildId, userId }); }
 async function setModLogin(guildId, userId, password) {
   await ModLogin.findOneAndUpdate({ guildId, userId }, { modPassword: password, lastLogin: new Date() }, { upsert: true });
@@ -737,7 +770,7 @@ client.on('messageCreate', async (message) => {
   try {
 
     // ============================================================
-    // == أوامر نظام الحضور (جديدة) ==
+    // == أوامر نظام الحضور ==
     // ============================================================
 
     if (cmd === '!setrole') {
@@ -1080,25 +1113,105 @@ client.on('messageCreate', async (message) => {
     }
 
     // ============================================================
-    // == متجر ==
+    // == متجر (معدل) ==
     // ============================================================
 
     if (cmd === 'متجر') {
       const items = await StoreItem.find({ guildId });
-      if (!items.length) return message.reply('📭 لا توجد منتجات في المتجر حالياً.');
-      const embed = new EmbedBuilder().setTitle('🛒 متجر الرتب').setDescription('اختر الرتبة التي تريد شراءها.').setColor(0x2b2d31);
+      if (!items.length) {
+        return message.reply('📭 لا توجد منتجات في المتجر حالياً.');
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle('🛒 متجر الرتب')
+        .setDescription('اختر الرتبة التي تريد شراءها من القائمة أدناه.\nسيتم إرسال طلبك إلى إدارة المتجر للموافقة عليه.')
+        .setColor(0x2b2d31);
+      
+      if (config.storePanelImage) {
+        embed.setImage(config.storePanelImage);
+      }
+      
       const options = items.map(item => {
         const role = message.guild.roles.cache.get(item.roleId);
         return {
           label: role ? role.name : 'رتبة غير موجودة',
           value: item._id.toString(),
           description: `${item.price} KL`,
+          emoji: '🛒',
         };
       });
-      const row = new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder().setCustomId('store_buy').setPlaceholder('🛒 اختر رتبة...').addOptions(options)
-      );
-      await message.channel.send({ embeds: [embed], components: [row] });
+      
+      // تقسيم الخيارات إلى مجموعات من 25 (حد الديسكورد)
+      const chunkSize = 25;
+      const rows = [];
+      for (let i = 0; i < options.length; i += chunkSize) {
+        const chunk = options.slice(i, i + chunkSize);
+        rows.push(
+          new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId(`store_buy_${i}`)
+              .setPlaceholder(`اختر رتبة (${i+1}-${Math.min(i+chunkSize, options.length)})`)
+              .addOptions(chunk)
+          )
+        );
+      }
+      
+      await message.channel.send({ embeds: [embed], components: rows });
+      return;
+    }
+
+    // ============================================================
+    // == تأكيد الشراء (جديد) ==
+    // ============================================================
+
+    if (cmd === 'تأكيد_شراء') {
+      if (!(await hasPermission(message.member, guildId))) {
+        return message.reply('❌ تحتاج صلاحية متحكم.');
+      }
+      
+      const targetUser = message.mentions.users.first();
+      if (!targetUser) {
+        return message.reply('⚠️ يرجى منشن المستخدم الذي تريد تأكيد شرائه.\nمثال: `!تأكيد_شراء @شخص`');
+      }
+      
+      const purchase = await getPendingPurchaseByUser(guildId, targetUser.id);
+      if (!purchase) {
+        return message.reply(`⚠️ لا يوجد طلب شراء معلق لـ ${targetUser}.`);
+      }
+      
+      const member = await message.guild.members.fetch(targetUser.id);
+      const role = message.guild.roles.cache.get(purchase.roleId);
+      if (!role) {
+        return message.reply('❌ الرتبة غير موجودة حالياً.');
+      }
+      
+      await member.roles.add(role);
+      await completePendingPurchase(guildId, targetUser.id);
+      
+      const embed = new EmbedBuilder()
+        .setTitle('✅ تم تأكيد الشراء')
+        .setDescription(`تم منح الرتبة **${role.name}** لـ ${targetUser} بنجاح.\nالسعر: ${purchase.price} KL`)
+        .setColor(0x2b2d31)
+        .setTimestamp();
+      
+      await message.channel.send({ embeds: [embed] });
+      
+      try {
+        const dmEmbed = new EmbedBuilder()
+          .setTitle('🎉 تم شراء الرتبة بنجاح!')
+          .setDescription(`تم منحك رتبة **${role.name}** في **${message.guild.name}**.`)
+          .setColor(0x2b2d31)
+          .setTimestamp();
+        await targetUser.send({ embeds: [dmEmbed] });
+      } catch (e) {}
+      
+      await logToChannel(guildId, {
+        title: '🛒 تأكيد شراء رتبة',
+        color: 0x2b2d31,
+        description: `**المنفذ:** ${message.author}\n**المشتري:** ${targetUser}\n**الرتبة:** ${role.name}\n**السعر:** ${purchase.price} KL`,
+        footer: 'نظام المتجر'
+      });
+      
       return;
     }
 
@@ -1145,7 +1258,7 @@ client.on('messageCreate', async (message) => {
             { name: '💡 الاقتراحات', value: '`قناة_اقتراح #قناة`، `عنوان_اقتراح نص`، `وصف_اقتراح نص`، `لون_اقتراح #هيكس`، `صورة_اقتراح رابط`' },
             { name: '👑 الإدارة', value: '`رتبة_اداري_علوي @رتبة`، `رتبة_اداري_صغري @رتبة`، `رتبة_مسؤول_اجازات @رتبة`' },
             { name: '💰 المالية', value: '`نقاط_المهمة [عدد]`، `راتب_يومي [عدد]`، `نقاط_الترقية [عدد]`' },
-            { name: '🛒 المتجر', value: '`اضافة_منتج @رتبة السعر [الوصف]`، `حذف_منتج [معرف]`' },
+            { name: '🛒 المتجر', value: '`اضافة_منتج @رتبة السعر [الوصف]`، `حذف_منتج [معرف]`، `صورة_المتجر [رابط]`، `قناة_المتجر #قناة`' },
             { name: '📌 القنوات', value: '`قناة_المهام #قناة`، `قناة_الاجازات #قناة`، `قناة_المودات #قناة`' },
             { name: '🖼️ بانل الإجازات', value: '`صورة_بانل_اجازات [رابط]`' }
           )
@@ -1155,23 +1268,37 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // تنفيذ الخيارات
-      if (sub === 'صورة_بانل_اجازات') {
+      // ---- صورة المتجر (جديد) ----
+      if (sub === 'صورة_المتجر') {
         if (!value) {
-          await updateGuildConfig(guildId, { leavePanelImage: null });
-          await logToChannel(guildId, { title: '⚙️ إعدادات', color: 0x2b2d31, description: `**${message.author}** ألغى صورة بانل الإجازات.` });
-          await message.reply('✅ تم إلغاء صورة بانل الإجازات.');
+          await updateGuildConfig(guildId, { storePanelImage: null });
+          await logToChannel(guildId, { title: '⚙️ إعدادات', color: 0x2b2d31, description: `**${message.author}** ألغى صورة المتجر.` });
+          await message.reply('✅ تم إلغاء صورة المتجر.');
           return;
         }
         const isUrl = /^https?:\/\/.+\.(png|jpg|jpeg|gif|webp)/i.test(value);
         if (!isUrl) { await message.reply('⚠️ الرابط غير صالح.'); return; }
-        await updateGuildConfig(guildId, { leavePanelImage: value });
-        await logToChannel(guildId, { title: '⚙️ إعدادات', color: 0x2b2d31, description: `**${message.author}** عيّن صورة بانل الإجازات: ${value}` });
-        await message.reply(`✅ تم تعيين صورة بانل الإجازات: ${value}`);
+        await updateGuildConfig(guildId, { storePanelImage: value });
+        await logToChannel(guildId, { title: '⚙️ إعدادات', color: 0x2b2d31, description: `**${message.author}** عيّن صورة المتجر: ${value}` });
+        await message.reply(`✅ تم تعيين صورة المتجر: ${value}`);
         return;
       }
 
-      // الترحيب
+      // ---- قناة المتجر (جديد) ----
+      if (sub === 'قناة_المتجر') {
+        const channel = message.mentions.channels.first();
+        if (!channel) {
+          await updateGuildConfig(guildId, { storeChannel: null });
+          await message.reply('✅ تم إلغاء تعيين قناة المتجر.');
+          return;
+        }
+        await updateGuildConfig(guildId, { storeChannel: channel.id });
+        await logToChannel(guildId, { title: '⚙️ إعدادات', color: 0x2b2d31, description: `**${message.author}** عيّن قناة المتجر إلى ${channel}` });
+        await message.reply(`✅ تم تعيين قناة المتجر إلى ${channel}`);
+        return;
+      }
+
+      // ---- الترحيب ----
       if (sub === 'ترحيب') {
         const channel = message.mentions.channels.first();
         if (!channel) {
@@ -1570,7 +1697,7 @@ client.on('messageCreate', async (message) => {
           { name: '📋 المهام', value: '`!لوحة_المهام` (للمدراء العلويين) – مع نقاط KL + نقاط إدارية وإثبات', inline: false },
           { name: '📅 الإجازات', value: '`!بانل_اجازات` (للمتحكمين)\n`!طلب_اجازة` (للإداريين)\n`!الموافقة_على_الاجازات` (لمسؤول الإجازات)', inline: false },
           { name: '💰 العملة', value: '`!رصيدي` (يعرض KL + نقاط إدارية)\n`!مصرف` (راتب يومي)\n`!اعطاء_عملات` و `!سحب_عملات` (للمتحكمين)\n`!توب` (ترتيب العملة)', inline: false },
-          { name: '🛒 المتجر', value: '`!متجر`', inline: false },
+          { name: '🛒 المتجر', value: '`!متجر` – اختر رتبة من القائمة المنسدلة\n`!تأكيد_شراء @شخص` (للمتحكمين) – تأكيد شراء رتبة', inline: false },
           { name: '🔐 تسجيل الدخول', value: '`!تسجيل_الدخول` (للمودات)', inline: false },
           { name: '📊 المستويات', value: '`!مستوى` `!ترتيب`', inline: false },
           { name: '🎫 التذاكر', value: '`!بانل` `!عرض_تذكرة` `!تعيين تذكرة`', inline: false },
@@ -2602,38 +2729,84 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- متجر – شراء رتبة -----
-    if (interaction.isStringSelectMenu() && interaction.customId === 'store_buy') {
+    // ============================================================
+    // == قائمة المتجر (معدلة) ==
+    // ============================================================
+    
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('store_buy_')) {
+      await interaction.deferReply({ ephemeral: true });
+      
       const itemId = interaction.values[0];
       const item = await StoreItem.findById(itemId);
-      if (!item) return interaction.reply({ content: '❌ المنتج غير موجود.', ephemeral: true });
-      const user = await getUser(guildId, interaction.user.id);
-      if (user.kl < item.price) return interaction.reply({ content: `⚠️ رصيدك غير كافٍ. تحتاج ${item.price} KL.`, ephemeral: true });
-      user.kl -= item.price;
-      await user.save();
+      if (!item) {
+        return interaction.editReply({ content: '❌ المنتج غير موجود.', ephemeral: true });
+      }
+      
       const role = interaction.guild.roles.cache.get(item.roleId);
-      if (!role) return interaction.reply({ content: '❌ الرتبة غير موجودة.', ephemeral: true });
-      await interaction.member.roles.add(role);
-      await interaction.reply({ content: `✅ تم شراء رتبة ${role} مقابل ${item.price} KL.`, ephemeral: true });
-      return;
-    }
-
-    // ----- تسجيل الدخول للمودات -----
-    if (interaction.isModalSubmit() && interaction.customId === 'mod_login_modal') {
-      const password = interaction.fields.getTextInputValue('mod_password');
-      const modEntry = await ModLogin.findOne({ guildId, userId: interaction.user.id });
-      if (!modEntry) return interaction.reply({ content: '❌ لا يوجد حساب مود مسجل.', ephemeral: true });
-      if (modEntry.modPassword !== password) return interaction.reply({ content: '❌ كلمة المرور خاطئة.', ephemeral: true });
-      modEntry.lastLogin = new Date();
-      await modEntry.save();
+      if (!role) {
+        return interaction.editReply({ content: '❌ الرتبة غير موجودة حالياً.', ephemeral: true });
+      }
+      
+      const user = interaction.user;
+      
+      // التحقق من وجود طلب شراء معلق لهذا المستخدم
+      const existingPurchase = await PendingPurchase.findOne({ guildId, userId: user.id, status: 'pending' });
+      if (existingPurchase) {
+        return interaction.editReply({
+          content: `⚠️ لديك طلب شراء معلق بالفعل للرتبة **${existingPurchase.roleName}**. يرجى انتظار تأكيد الإدارة.`,
+          ephemeral: true
+        });
+      }
+      
+      // إنشاء طلب شراء معلق
+      await createPendingPurchase(guildId, user.id, item.roleId, role.name, item.price);
+      
+      // رد للمستخدم
+      const embed = new EmbedBuilder()
+        .setTitle('📩 طلب شراء جديد')
+        .setDescription(`لقد طلبت شراء الرتبة **${role.name}** بسعر **${item.price} KL**.\n\n📌 **تعليمات الدفع:**\nيرجى تحويل المبلغ المطلوب إلى إدارة المتجر.\nسيتم منحك الرتبة بعد تأكيد الدفع.`)
+        .setColor(0x2b2d31)
+        .setTimestamp();
+      
+      await interaction.editReply({ embeds: [embed], ephemeral: true });
+      
+      // إرسال إشعار إلى قناة المتجر (أو للمالك/المتحكمين)
       const config = await getGuildConfig(guildId);
-      const channel = config.modLoginChannel ? interaction.guild.channels.cache.get(config.modLoginChannel) : null;
-      if (channel) await channel.send(`🔐 **${interaction.user}** سجل الدخول كمود.`);
-      await interaction.reply({ content: '✅ تم تسجيل الدخول بنجاح.', ephemeral: true });
+      const storeChannel = config.storeChannel ? interaction.guild.channels.cache.get(config.storeChannel) : null;
+      
+      const notifyEmbed = new EmbedBuilder()
+        .setTitle('🛒 طلب شراء جديد')
+        .setDescription(`**المشتري:** ${user}\n**الرتبة:** ${role.name}\n**السعر:** ${item.price} KL\n**الحالة:** في انتظار الدفع`)
+        .setColor(0x2b2d31)
+        .setTimestamp()
+        .setFooter({ text: `استخدم !تأكيد_شراء ${user} لمنح الرتبة بعد الدفع` });
+      
+      if (storeChannel) {
+        await storeChannel.send({ content: `<@&${config.leaveManagerRole || ''}>`, embeds: [notifyEmbed] });
+      } else {
+        // إذا لم توجد قناة مخصصة، أرسل للمالك
+        const owner = await interaction.guild.members.fetch(OWNER_ID).catch(() => null);
+        if (owner) {
+          await owner.send({ embeds: [notifyEmbed] }).catch(() => {});
+        }
+        // وأيضاً إرسال في نفس القناة التي تم الطلب منها
+        await interaction.channel.send({ embeds: [notifyEmbed] });
+      }
+      
+      // سجل في اللوق
+      await logToChannel(guildId, {
+        title: '🛒 طلب شراء جديد',
+        color: 0x2b2d31,
+        description: `**المشتري:** ${user.tag}\n**الرتبة:** ${role.name}\n**السعر:** ${item.price} KL`,
+        footer: 'نظام المتجر'
+      });
+      
       return;
     }
 
-    // ----- مودال الاقتراح -----
+    // ----- باقي التفاعلات (الاقتراحات، التذاكر، تغيير الاسم، إلخ) -----
+    
+    // مودال الاقتراح
     if (interaction.isButton() && interaction.customId === 'suggest_modal') {
       const modal = new ModalBuilder()
         .setCustomId('suggest_modal_submit')
@@ -2676,7 +2849,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- أزرار الاقتراحات (قبول، رفض، تعليق) -----
+    // أزرار الاقتراحات (قبول، رفض، تعليق)
     if (interaction.isButton() && ['suggest_accept', 'suggest_reject', 'suggest_comment'].includes(interaction.customId)) {
       if (!(await hasPermission(interaction.member, interaction.guild.id)))
         return interaction.reply({ content: '❌ هذا الزر للمشرفين فقط.', ephemeral: true });
@@ -2711,7 +2884,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- مودال التعليق على الاقتراح -----
+    // مودال التعليق على الاقتراح
     if (interaction.isModalSubmit() && interaction.customId === 'suggest_comment_modal') {
       const comment = interaction.fields.getTextInputValue('comment_text');
       const msg = interaction.message;
@@ -2730,7 +2903,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- قائمة التذاكر -----
+    // قائمة التذاكر
     if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_menu') {
       await interaction.deferReply({ ephemeral: true });
       const selected = interaction.values[0];
@@ -2766,7 +2939,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- زر إغلاق التذكرة -----
+    // زر إغلاق التذكرة
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
       const channel = interaction.channel;
       if (!channel.name.startsWith('تذكرة-')) return interaction.reply({ content: '⚠️ هذه ليست قناة تذكرة.', ephemeral: true });
@@ -2775,10 +2948,9 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- زر تغيير الاسم -----
+    // زر تغيير الاسم
     if (interaction.isButton() && interaction.customId === 'open_name_modal') {
       const userId = interaction.user.id;
-      // يمكنك إضافة كول داون هنا إذا أردت
       const modal = new ModalBuilder()
         .setCustomId('name_change_modal')
         .setTitle('تغيير الاسم')
@@ -2791,7 +2963,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- مودال تغيير الاسم -----
+    // مودال تغيير الاسم
     if (interaction.isModalSubmit() && interaction.customId === 'name_change_modal') {
       const newName = interaction.fields.getTextInputValue('new_name');
       if (newName.length < 2 || newName.length > 32) return interaction.reply({ content: '⚠️ الاسم يجب أن يكون بين 2 و 32 حرفاً.', ephemeral: true });
@@ -2805,7 +2977,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- رتب الإشعارات (أزرار) -----
+    // رتب الإشعارات (أزرار)
     if (interaction.isButton() && ['role_game', 'role_event', 'role_ajr'].includes(interaction.customId)) {
       const roleMap = { role_game: 'Game Notice', role_event: 'Event Notice', role_ajr: 'Ajr Notice' };
       const roleName = roleMap[interaction.customId];
@@ -2819,6 +2991,21 @@ client.on('interactionCreate', async (interaction) => {
         await member.roles.add(role);
         await interaction.reply({ content: `✅ تم منحك رتبة ${roleName}.`, ephemeral: true });
       }
+      return;
+    }
+
+    // تسجيل الدخول للمودات
+    if (interaction.isModalSubmit() && interaction.customId === 'mod_login_modal') {
+      const password = interaction.fields.getTextInputValue('mod_password');
+      const modEntry = await ModLogin.findOne({ guildId, userId: interaction.user.id });
+      if (!modEntry) return interaction.reply({ content: '❌ لا يوجد حساب مود مسجل.', ephemeral: true });
+      if (modEntry.modPassword !== password) return interaction.reply({ content: '❌ كلمة المرور خاطئة.', ephemeral: true });
+      modEntry.lastLogin = new Date();
+      await modEntry.save();
+      const config = await getGuildConfig(guildId);
+      const channel = config.modLoginChannel ? interaction.guild.channels.cache.get(config.modLoginChannel) : null;
+      if (channel) await channel.send(`🔐 **${interaction.user}** سجل الدخول كمود.`);
+      await interaction.reply({ content: '✅ تم تسجيل الدخول بنجاح.', ephemeral: true });
       return;
     }
 
