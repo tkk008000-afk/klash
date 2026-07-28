@@ -63,7 +63,7 @@ const ConfigSchema = new mongoose.Schema({
   leaveManagerRole: String,
   seniorAdminRole: String,
   juniorAdminRole: String,
-  sellerRole: String,                           // <-- حقل رتبة البائع
+  sellerRole: String,
   pointsPerTask: { type: Number, default: 10 },
   dailySalary: { type: Number, default: 5 },
   promotionPoints: { type: Number, default: 100 },
@@ -117,7 +117,6 @@ const LeaveRequestSchema = new mongoose.Schema({
 });
 const LeaveRequest = mongoose.model('LeaveRequest', LeaveRequestSchema);
 
-// ========== نموذج المتجر ==========
 const StoreItemSchema = new mongoose.Schema({
   guildId: String,
   roleId: String,
@@ -126,7 +125,6 @@ const StoreItemSchema = new mongoose.Schema({
 });
 const StoreItem = mongoose.model('StoreItem', StoreItemSchema);
 
-// ========== نموذج طلبات الشراء المعلقة ==========
 const PendingPurchaseSchema = new mongoose.Schema({
   guildId: String,
   userId: String,
@@ -1027,7 +1025,7 @@ client.on('messageCreate', async (message) => {
             { name: '🛒 المتجر', value: '`اضافة_منتج @رتبة السعر [الوصف]`، `حذف_منتج [معرف]`، `صورة_المتجر [رابط]`، `قناة_المتجر #قناة`' },
             { name: '📌 القنوات', value: '`قناة_المهام #قناة`، `قناة_الاجازات #قناة`، `قناة_المودات #قناة`' },
             { name: '🖼️ بانل الإجازات', value: '`صورة_بانل_اجازات [رابط]`' },
-            { name: '👤 رتبة البائع', value: '`رتبة_بائع @رتبة`' }  // <-- إضافة هذا السطر
+            { name: '👤 رتبة البائع', value: '`رتبة_بائع @رتبة`' }
           )
           .setFooter({ text: 'الصيغة: !تعيين [الخيار] [القيمة]' });
         if (generalImage) embed.setImage(generalImage);
@@ -2428,7 +2426,6 @@ client.on('interactionCreate', async (interaction) => {
         content: `✅ تم إنهاء المهمة **${task.title}**\nحصلت على **${task.points} KL** و **${task.adminPoints} نقاط إدارية**.\nالإثبات: ${proofText}${proofImage ? `\n[صورة](${proofImage})` : ''}`,
         ephemeral: true
       });
-      // لاحظ أن المتغير creator لم يُستخدم، لكن يمكنك استخدامه في لوق مثلاً.
       return;
     }
 
@@ -2623,8 +2620,210 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- (بقية معالجات التفاعلات الأخرى كالتذاكر والاقتراحات وتغيير الاسم الخ) -----
-    // ... (يمكن إضافتها إذا كانت مفقودة، ولكنها موجودة في الكود الأصلي ولم نُزلها)
+    // ============================================================
+    // == معالجات التذاكر (المفقودة سابقاً) ==
+    // ============================================================
+
+    // ----- فتح تذكرة من القائمة المنسدلة -----
+    if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_menu') {
+      const sectionName = interaction.values[0];
+      const settings = await getTicketSettings(guildId);
+      const section = settings.sections.find(s => s.name === sectionName);
+      if (!section) {
+        return interaction.reply({ content: '❌ قسم غير موجود.', ephemeral: true });
+      }
+      
+      const role = section.roleId ? interaction.guild.roles.cache.get(section.roleId) : null;
+      
+      // إنشاء قناة التذكرة
+      const channel = await interaction.guild.channels.create({
+        name: `تذكرة-${interaction.user.username}`,
+        type: ChannelType.GuildText,
+        parent: interaction.channel.parentId,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.id,
+            deny: [PermissionsBitField.Flags.ViewChannel],
+          },
+          {
+            id: interaction.user.id,
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
+          },
+          ...(role ? [{
+            id: role.id,
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
+          }] : [])
+        ]
+      });
+      
+      const embed = new EmbedBuilder()
+        .setTitle('🎫 تذكرة جديدة')
+        .setDescription(`**القسم:** ${sectionName}\n**المستخدم:** ${interaction.user}\nيرجى الانتظار حتى يتم الرد عليك.`)
+        .setColor(0x2b2d31)
+        .setTimestamp();
+      
+      const closeBtn = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('close_ticket')
+          .setLabel('🔒 إغلاق')
+          .setStyle(ButtonStyle.Danger)
+      );
+      
+      await channel.send({
+        content: `${interaction.user} ${role ? `<@&${role.id}>` : ''}`,
+        embeds: [embed],
+        components: [closeBtn]
+      });
+      
+      await interaction.reply({
+        content: `✅ تم إنشاء تذكرتك: ${channel}`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    // ----- إغلاق التذكرة -----
+    if (interaction.isButton() && interaction.customId === 'close_ticket') {
+      if (!interaction.channel.name.startsWith('تذكرة-')) {
+        return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
+      }
+      
+      await interaction.reply({ content: '🔒 جاري إغلاق التذكرة...', ephemeral: false });
+      
+      setTimeout(async () => {
+        try {
+          await interaction.channel.delete();
+        } catch (e) {
+          console.error('خطأ في حذف التذكرة:', e);
+        }
+      }, 5000);
+      return;
+    }
+
+    // ============================================================
+    // == معالجات الاقتراحات ==
+    // ============================================================
+
+    if (interaction.isButton() && interaction.customId === 'suggest_modal') {
+      if (!config.suggestionsChannel) {
+        return interaction.reply({ content: '⚠️ لم تُعيّن قناة الاقتراحات.', ephemeral: true });
+      }
+      const modal = new ModalBuilder()
+        .setCustomId('suggest_submit')
+        .setTitle('💡 تقديم اقتراح')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('suggest_text')
+              .setLabel('نص الاقتراح')
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setMinLength(5)
+              .setMaxLength(1000)
+          )
+        );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'suggest_submit') {
+      const text = interaction.fields.getTextInputValue('suggest_text');
+      const channel = interaction.guild.channels.cache.get(config.suggestionsChannel);
+      if (!channel) {
+        return interaction.reply({ content: '⚠️ قناة الاقتراحات غير موجودة.', ephemeral: true });
+      }
+      const embed = new EmbedBuilder()
+        .setTitle('💡 اقتراح جديد')
+        .setDescription(text)
+        .setColor(parseInt(config.suggestionsColor?.replace('#', '') || '2b2d31', 16))
+        .setFooter({ text: `بواسطة ${interaction.user.tag}` })
+        .setTimestamp();
+      if (config.suggestionsImage) embed.setImage(config.suggestionsImage);
+      const msg = await channel.send({ embeds: [embed] });
+      await msg.react('👍');
+      await msg.react('👎');
+      await interaction.reply({ content: '✅ تم إرسال اقتراحك.', ephemeral: true });
+      return;
+    }
+
+    // ============================================================
+    // == معالجات رتب الإشعارات ==
+    // ============================================================
+
+    if (interaction.isButton() && ['role_game', 'role_event', 'role_ajr'].includes(interaction.customId)) {
+      const roleMap = {
+        'role_game': 'Game Notice',
+        'role_event': 'Event Notice',
+        'role_ajr': 'Ajr Notice'
+      };
+      const roleName = roleMap[interaction.customId];
+      let role = interaction.guild.roles.cache.find(r => r.name === roleName);
+      if (!role) {
+        role = await interaction.guild.roles.create({
+          name: roleName,
+          color: '#00ff00',
+          reason: 'تم إنشاء الرتبة عبر لوحة الإشعارات'
+        });
+      }
+      if (interaction.member.roles.cache.has(role.id)) {
+        await interaction.member.roles.remove(role);
+        await interaction.reply({ content: `❌ تم إزالة رتبة ${roleName}.`, ephemeral: true });
+      } else {
+        await interaction.member.roles.add(role);
+        await interaction.reply({ content: `✅ تم إضافة رتبة ${roleName}.`, ephemeral: true });
+      }
+      return;
+    }
+
+    // ============================================================
+    // == معالجات تغيير الاسم ==
+    // ============================================================
+
+    if (interaction.isButton() && interaction.customId === 'open_name_modal') {
+      const modal = new ModalBuilder()
+        .setCustomId('change_name_modal')
+        .setTitle('✏️ تغيير الاسم')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('new_name')
+              .setLabel('الاسم الجديد')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setMinLength(2)
+              .setMaxLength(32)
+          )
+        );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'change_name_modal') {
+      const newName = interaction.fields.getTextInputValue('new_name');
+      try {
+        await interaction.member.setNickname(newName);
+        await setNameCooldown(interaction.user.id);
+        await interaction.reply({ content: `✅ تم تغيير اسمك إلى **${newName}**.`, ephemeral: true });
+      } catch (error) {
+        await interaction.reply({ content: '❌ لا يمكن تغيير الاسم. قد لا تملك الصلاحية.', ephemeral: true });
+      }
+      return;
+    }
+
+    // ============================================================
+    // == معالجات تسجيل الدخول للمودات ==
+    // ============================================================
+
+    if (interaction.isModalSubmit() && interaction.customId === 'mod_login_modal') {
+      const password = interaction.fields.getTextInputValue('mod_password');
+      await setModLogin(guildId, interaction.user.id, password);
+      await interaction.reply({ content: '✅ تم تسجيل الدخول بنجاح.', ephemeral: true });
+      await logToChannel(guildId, {
+        title: '🔐 تسجيل مود',
+        description: `${interaction.user} سجل دخوله.`
+      });
+      return;
+    }
 
   } catch (error) {
     console.error('❌ خطأ في معالج التفاعل:', error);
