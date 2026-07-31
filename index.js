@@ -1,5 +1,5 @@
 // ============================================================
-// البوت المتكامل - جميع الميزات (مع نظام المتجر المتطور والتذاكر المتطورة)
+// البوت المتكامل - النسخة النهائية بجميع الميزات
 // ============================================================
 
 const {
@@ -81,6 +81,7 @@ const UserSchema = new mongoose.Schema({
   kl: { type: Number, default: 0 },
   adminPoints: { type: Number, default: 0 },
   lastDaily: Date,
+  lastVoiceReward: { type: Date, default: null }, // لتتبع منح الفويس
   assignedTasks: [{ taskId: mongoose.Schema.Types.ObjectId, status: { type: String, enum: ['pending', 'accepted', 'completed'], default: 'pending' } }],
   leave: { isOnLeave: { type: Boolean, default: false }, leaveEnd: Date, savedRoles: [String] },
   purchasedRoles: [String],
@@ -421,10 +422,39 @@ const client = new Client({
   ],
 });
 
+// جلسات الصوت (لتتبع وقت المستخدمين)
+const voiceSessions = new Map();
+
 client.once('ready', () => {
   console.log(`✅ البوت جاهز باسم ${client.user.tag}`);
   console.log(`👑 صاحب البوت: ${OWNER_ID}`);
   client.user.setActivity('The Kingdom Never Falls.', { type: ActivityType.Watching });
+
+  // ====== نظام منح 1 KL لكل دقيقة في الفويس ======
+  setInterval(async () => {
+    const now = Date.now();
+    for (const [key, joinTime] of voiceSessions) {
+      const [guildId, userId] = key.split('-');
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) continue;
+      const member = await guild.members.fetch(userId).catch(() => null);
+      if (!member) continue;
+      // تأكد من أن العضو لا يزال في قناة صوتية
+      if (!member.voice.channel) {
+        voiceSessions.delete(key);
+        continue;
+      }
+      // تأكد من مرور دقيقة على الأقل منذ آخر منح
+      const elapsed = now - joinTime;
+      if (elapsed >= 60000) {
+        const user = await getUser(guildId, userId);
+        user.kl += 1;
+        await user.save();
+        // تحديث وقت الجلسة لمنح 1 كل دقيقة
+        voiceSessions.set(key, now);
+      }
+    }
+  }, 60000); // كل 60 ثانية
 });
 
 // ============================================================
@@ -589,7 +619,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
 });
 
 // ============================================================
-// ========== نظام المستويات والأوتو لاين ==========
+// ========== نظام المستويات والأوتو لاين ومكافأة الرسائل ==========
 // ============================================================
 
 client.on('messageCreate', async (message) => {
@@ -600,15 +630,28 @@ client.on('messageCreate', async (message) => {
   const userId = message.author.id;
   const config = await getGuildConfig(guildId);
 
-  if (config.levelChannelId && message.channel.id !== config.levelChannelId) {
-    // إذا كان هناك قناة محددة للمستويات وهذه ليست هي، نمر للمرحلة التالية (الأوتو لاين)
-  } else {
+  // ====== المستويات ======
+  if (!config.levelChannelId || message.channel.id === config.levelChannelId) {
     const user = await getUser(guildId, userId);
     user.messages += 1;
     const gain = Math.floor(Math.random() * 15) + 5;
     user.xp += gain;
     let currentLevel = user.level;
     let requiredXP = (currentLevel + 1) * 100;
+
+    // ====== مكافأة كل 30 رسالة ======
+    if (user.messages % 30 === 0 && user.messages > 0) {
+      user.kl += 15;
+      await user.save();
+      const generalImage = getGeneralImage(message.guild, config);
+      const embed = new EmbedBuilder()
+        .setTitle('💰 مكافأة رسائل!')
+        .setDescription(`${message.author}، وصلت إلى **${user.messages}** رسالة!\nحصلت على **15 KL** 🎉`)
+        .setColor(0x2b2d31)
+        .setTimestamp();
+      if (generalImage) embed.setImage(generalImage);
+      await message.channel.send({ embeds: [embed] }).catch(() => {});
+    }
 
     if (user.xp >= requiredXP) {
       user.level += 1;
@@ -674,6 +717,25 @@ client.on('messageCreate', async (message) => {
     } catch (e) {
       await message.channel.send(autoReply.reply).catch(() => {});
     }
+  }
+});
+
+// ============================================================
+// ========== نظام الصوت (تتبع جلسات الفويس) ==========
+// ============================================================
+
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  const userId = newState.member.id;
+  const guildId = newState.guild.id;
+
+  // إذا دخل المستخدم إلى قناة صوتية
+  if (newState.channelId && !oldState.channelId) {
+    voiceSessions.set(`${guildId}-${userId}`, Date.now());
+  }
+
+  // إذا غادر المستخدم القناة الصوتية
+  if (!newState.channelId && oldState.channelId) {
+    voiceSessions.delete(`${guildId}-${userId}`);
   }
 });
 
@@ -1470,7 +1532,7 @@ client.on('messageCreate', async (message) => {
           { name: '👑 نظام التحكم', value: '`متحكم @شخص` `الغاء_متحكم @شخص` `قائمة_المتحكمين`', inline: false },
           { name: '📋 المهام', value: '`!لوحة_المهام` (للمدراء العلويين) – مع نقاط KL + نقاط إدارية وإثبات', inline: false },
           { name: '📅 الإجازات', value: '`!بانل_اجازات` (للمتحكمين)\n`!طلب_اجازة` (للإداريين)\n`!الموافقة_على_الاجازات` (لمسؤول الإجازات)', inline: false },
-          { name: '💰 العملة', value: '`!رصيدي` (يعرض KL + نقاط إدارية)\n`!مصرف` (راتب يومي)\n`!اعطاء_عملات` و `!سحب_عملات` (للمتحكمين)\n`!توب` (ترتيب العملة)', inline: false },
+          { name: '💰 العملة', value: '`!رصيدي` (يعرض KL + نقاط إدارية)\n`!مصرف` (راتب يومي)\n`!اعطاء_عملات` و `!سحب_عملات` (للمتحكمين)\n`!توب` (ترتيب العملة)\n**مكافآت تلقائية:** 15 KL كل 30 رسالة، 1 KL كل دقيقة في الفويس', inline: false },
           { name: '🛒 المتجر', value: '`!بانل_اضافة_منتج` (للمتحكمين) – لإضافة منتج\n`!متجر` – شراء رتبة عبر القائمة المنسدلة\nيتطلب رتبة بائع (تُعيّن بـ `!تعيين رتبة_بائع`)', inline: false },
           { name: '🔐 تسجيل الدخول', value: '`!تسجيل_الدخول` (للمودات)', inline: false },
           { name: '📊 المستويات', value: '`!مستوى` `!ترتيب`', inline: false },
