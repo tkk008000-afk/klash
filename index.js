@@ -1,5 +1,5 @@
 // ============================================================
-// البوت المتكامل - جميع الميزات (مع نظام المتجر المتطور)
+// البوت المتكامل - جميع الميزات (مع نظام المتجر المتطور والتذاكر المتطورة)
 // ============================================================
 
 const {
@@ -2621,7 +2621,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // ============================================================
-    // == معالجات التذاكر (المفقودة سابقاً) ==
+    // == معالجات التذاكر المتطورة (استلام - إضافة عضو - إغلاق) ==
     // ============================================================
 
     // ----- فتح تذكرة من القائمة المنسدلة -----
@@ -2656,29 +2656,105 @@ client.on('interactionCreate', async (interaction) => {
         ]
       });
       
-      const embed = new EmbedBuilder()
-        .setTitle('🎫 تذكرة جديدة')
-        .setDescription(`**القسم:** ${sectionName}\n**المستخدم:** ${interaction.user}\nيرجى الانتظار حتى يتم الرد عليك.`)
-        .setColor(0x2b2d31)
-        .setTimestamp();
-      
-      const closeBtn = new ActionRowBuilder().addComponents(
+      // الأزرار الجديدة: استلام، إضافة عضو، إغلاق
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('claim_ticket')
+          .setLabel('📥 استلام التذكرة')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId('add_member_ticket')
+          .setLabel('➕ إضافة عضو')
+          .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId('close_ticket')
           .setLabel('🔒 إغلاق')
           .setStyle(ButtonStyle.Danger)
       );
       
+      const embed = new EmbedBuilder()
+        .setTitle('🎫 تذكرة جديدة')
+        .setDescription(`**القسم:** ${sectionName}\n**المستخدم:** ${interaction.user}\nاستخدم الأزرار أدناه لإدارة التذكرة.`)
+        .setColor(0x2b2d31)
+        .setTimestamp();
+      
       await channel.send({
         content: `${interaction.user} ${role ? `<@&${role.id}>` : ''}`,
         embeds: [embed],
-        components: [closeBtn]
+        components: [row]
       });
       
       await interaction.reply({
         content: `✅ تم إنشاء تذكرتك: ${channel}`,
         ephemeral: true
       });
+      return;
+    }
+
+    // ----- استلام التذكرة (claim) -----
+    if (interaction.isButton() && interaction.customId === 'claim_ticket') {
+      if (!interaction.channel.name.startsWith('تذكرة-')) {
+        return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
+      }
+      
+      // منح العضو صلاحية إدارة القناة
+      await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
+        ManageChannels: true,
+      });
+      
+      await interaction.reply({
+        content: `✅ ${interaction.user} استلم التذكرة وسيكون مسؤولاً عنها.`,
+        ephemeral: false
+      });
+      
+      // إرسال تنبيه في القناة
+      await interaction.channel.send(`📥 تم استلام التذكرة بواسطة ${interaction.user}.`);
+      return;
+    }
+
+    // ----- إضافة عضو إلى التذكرة (مودال) -----
+    if (interaction.isButton() && interaction.customId === 'add_member_ticket') {
+      if (!interaction.channel.name.startsWith('تذكرة-')) {
+        return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
+      }
+      
+      const modal = new ModalBuilder()
+        .setCustomId('add_member_modal')
+        .setTitle('➕ إضافة عضو إلى التذكرة')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('member_id')
+              .setLabel('معرف العضو (ID)')
+              .setStyle(TextInputStyle.Short)
+              .setRequired(true)
+              .setPlaceholder('مثال: 123456789012345678')
+          )
+        );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    // ----- مودال إضافة عضو -----
+    if (interaction.isModalSubmit() && interaction.customId === 'add_member_modal') {
+      const memberId = interaction.fields.getTextInputValue('member_id').trim();
+      const member = await interaction.guild.members.fetch(memberId).catch(() => null);
+      if (!member) {
+        return interaction.reply({ content: '❌ العضو غير موجود.', ephemeral: true });
+      }
+      
+      // إضافة صلاحيات للعضو في قناة التذكرة
+      await interaction.channel.permissionOverwrites.edit(member.id, {
+        ViewChannel: true,
+        SendMessages: true,
+      });
+      
+      await interaction.reply({
+        content: `✅ تم إضافة ${member} إلى التذكرة.`,
+        ephemeral: true
+      });
+      
+      await interaction.channel.send(`➕ تم إضافة ${member} إلى التذكرة بواسطة ${interaction.user}.`);
       return;
     }
 
@@ -2705,6 +2781,7 @@ client.on('interactionCreate', async (interaction) => {
     // ============================================================
 
     if (interaction.isButton() && interaction.customId === 'suggest_modal') {
+      const config = await getGuildConfig(guildId);
       if (!config.suggestionsChannel) {
         return interaction.reply({ content: '⚠️ لم تُعيّن قناة الاقتراحات.', ephemeral: true });
       }
@@ -2727,6 +2804,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.isModalSubmit() && interaction.customId === 'suggest_submit') {
+      const config = await getGuildConfig(guildId);
       const text = interaction.fields.getTextInputValue('suggest_text');
       const channel = interaction.guild.channels.cache.get(config.suggestionsChannel);
       if (!channel) {
