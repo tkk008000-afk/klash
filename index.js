@@ -1142,7 +1142,7 @@ client.on('messageCreate', async (message) => {
     }
 
     // ============================================================
-    // == أمر لوق التذكرة ==
+    // == أمر لوق التذكرة (معدل) ==
     // ============================================================
 
     if (cmd === 'لوق_تذكرة' || cmd === 'لوق' || cmd === 'تقرير') {
@@ -1154,11 +1154,22 @@ client.on('messageCreate', async (message) => {
         return message.reply('❌ لا توجد سجلات لهذه التذكرة.');
       }
 
+      // توليد ملف HTML
+      let htmlBuffer;
+      try {
+        const html = await generateTicketHTML(message.channel, log);
+        htmlBuffer = Buffer.from(html, 'utf-8');
+      } catch (e) {
+        console.error('خطأ في توليد HTML:', e);
+        return message.reply('❌ حدث خطأ أثناء توليد تقرير HTML.');
+      }
+
       const creator = await message.guild.members.fetch(log.userId).catch(() => null);
       const claimedBy = log.claimedBy ? await message.guild.members.fetch(log.claimedBy).catch(() => null) : null;
       const addedMembersList = log.addedMembers || [];
       const addedMembersMentions = addedMembersList.length ? addedMembersList.map(id => `<@${id}>`).join(', ') : 'لا يوجد';
 
+      // إمبيد الملخص (سيُرسل علنياً في الروم)
       const embed = new EmbedBuilder()
         .setTitle('📋 تقرير التذكرة')
         .setColor(0x2b2d31)
@@ -1174,21 +1185,43 @@ client.on('messageCreate', async (message) => {
         )
         .setTimestamp();
 
+      // إرسال الإمبيد وملف HTML علناً في قناة التذكرة
+      await message.channel.send({
+        content: `📋 تقرير التذكرة **${message.channel.name}**`,
+        embeds: [embed],
+        files: [{ attachment: htmlBuffer, name: `تذكرة-${message.channel.name}.html` }]
+      });
+
+      // إرسال نسخة إلى قناة السجلات إن وجدت
       const logChannelId = config.ticketLogChannel;
       if (logChannelId) {
         const logChannel = message.guild.channels.cache.get(logChannelId);
         if (logChannel) {
-          await logChannel.send({ embeds: [embed] });
+          await logChannel.send({
+            content: `📋 تقرير التذكرة: ${message.channel.name}`,
+            embeds: [embed],
+            files: [{ attachment: htmlBuffer, name: `تذكرة-${message.channel.name}.html` }]
+          });
         }
       }
 
+      // إرسال إلى خاص منشئ التذكرة
       if (creator) {
         try {
-          await creator.send({ embeds: [embed] });
+          const dmEmbed = new EmbedBuilder()
+            .setTitle('📋 تقرير تذكرتك')
+            .setDescription(`تم طلب تقرير تذكرتك \`${message.channel.name}\` في **${message.guild.name}**`)
+            .setColor(0x2b2d31)
+            .setTimestamp();
+          await creator.send({
+            embeds: [dmEmbed],
+            files: [{ attachment: htmlBuffer, name: `تذكرة-${message.channel.name}.html` }]
+          });
         } catch (e) {}
       }
 
-      await message.reply({ content: '✅ تم إرسال تقرير التذكرة إلى قناة السجلات وإلى منشئ التذكرة.', ephemeral: true });
+      // رد خفي للتأكيد
+      await message.reply({ content: '✅ تم نشر التقرير في الروم وإرساله إلى قناة السجلات ومنشئ التذكرة.', ephemeral: true });
       return;
     }
 
@@ -2944,7 +2977,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- إغلاق التذكرة مع إرسال HTML -----
+    // ----- إغلاق التذكرة مع إرسال HTML (معدل) -----
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
@@ -2955,51 +2988,81 @@ client.on('interactionCreate', async (interaction) => {
       const log = await getTicketLogByChannel(interaction.channel.id);
 
       // توليد ملف HTML
-      const html = await generateTicketHTML(interaction.channel, log);
-      const buffer = Buffer.from(html, 'utf-8');
+      let htmlBuffer;
+      try {
+        const html = await generateTicketHTML(interaction.channel, log);
+        htmlBuffer = Buffer.from(html, 'utf-8');
+      } catch (e) {
+        console.error('خطأ في توليد HTML للإغلاق:', e);
+        await interaction.reply({ content: '❌ حدث خطأ أثناء توليد التقرير، سيتم إغلاق التذكرة بدون ملف.', ephemeral: true });
+        // حتى لو فشل التوليد، نكمل الحذف
+        setTimeout(async () => {
+          try { await interaction.channel.delete(); } catch (err) {}
+        }, 3000);
+        return;
+      }
 
-      // إرسال إلى قناة السجلات
+      // بناء الإمبيد الملخص
+      const creator = await interaction.guild.members.fetch(log.userId).catch(() => null);
+      const claimedBy = log.claimedBy ? await interaction.guild.members.fetch(log.claimedBy).catch(() => null) : null;
+      const addedMembersList = log.addedMembers || [];
+      const addedMembersMentions = addedMembersList.length ? addedMembersList.map(id => `<@${id}>`).join(', ') : 'لا يوجد';
+
+      const embed = new EmbedBuilder()
+        .setTitle('📋 تقرير التذكرة - مغلقة')
+        .setColor(0x2b2d31)
+        .addFields(
+          { name: '🆔 معرف القناة', value: `#${interaction.channel.name}`, inline: true },
+          { name: '👤 منشئ التذكرة', value: creator ? creator.toString() : 'غير معروف', inline: true },
+          { name: '📂 القسم', value: log.section || 'غير محدد', inline: true },
+          { name: '📅 وقت الفتح', value: `<t:${Math.floor(log.createdAt.getTime() / 1000)}:F>`, inline: true },
+          { name: '📌 الحالة', value: '🔴 مغلقة', inline: true },
+          { name: '📥 استلمها', value: claimedBy ? claimedBy.toString() : 'لم تستلم', inline: true },
+          { name: '👥 الأعضاء المضافين', value: addedMembersMentions, inline: false },
+          { name: '⏱️ وقت الإغلاق', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
+        )
+        .setTimestamp();
+
+      // 1. إرسال التقرير علناً في قناة التذكرة مع ملف HTML
+      await interaction.reply({
+        content: `🔒 تم إغلاق التذكرة. التقرير النهائي:`,
+        embeds: [embed],
+        files: [{ attachment: htmlBuffer, name: `تذكرة-${interaction.channel.name}.html` }]
+      });
+
+      // 2. إرسال نسخة إلى قناة السجلات إن وجدت
       const config = await getGuildConfig(guildId);
       const logChannelId = config.ticketLogChannel;
       if (logChannelId) {
         const logChannel = interaction.guild.channels.cache.get(logChannelId);
         if (logChannel) {
-          const embed = new EmbedBuilder()
-            .setTitle('📋 تقرير التذكرة - HTML')
-            .setDescription(`تم إغلاق التذكرة \`${interaction.channel.name}\``)
-            .setColor(0x2b2d31)
-            .setTimestamp();
           await logChannel.send({
-            content: `📋 تقرير التذكرة: ${interaction.channel.name}`,
+            content: `📋 تقرير التذكرة المغلقة: ${interaction.channel.name}`,
             embeds: [embed],
-            files: [{ attachment: buffer, name: `تذكرة-${interaction.channel.name}.html` }]
+            files: [{ attachment: htmlBuffer, name: `تذكرة-${interaction.channel.name}.html` }]
           });
         }
       }
 
-      // إرسال إلى خاص منشئ التذكرة
-      if (log) {
-        const creator = await interaction.guild.members.fetch(log.userId).catch(() => null);
-        if (creator) {
-          try {
-            const dmEmbed = new EmbedBuilder()
-              .setTitle('📋 تقرير تذكرتك')
-              .setDescription(`تم إغلاق تذكرتك \`${interaction.channel.name}\` في **${interaction.guild.name}**`)
-              .setColor(0x2b2d31)
-              .setTimestamp();
-            await creator.send({
-              embeds: [dmEmbed],
-              files: [{ attachment: buffer, name: `تذكرة-${interaction.channel.name}.html` }]
-            });
-          } catch (e) {}
-        }
+      // 3. إرسال إلى خاص منشئ التذكرة
+      if (creator) {
+        try {
+          const dmEmbed = new EmbedBuilder()
+            .setTitle('📋 تقرير تذكرتك المغلقة')
+            .setDescription(`تم إغلاق تذكرتك \`${interaction.channel.name}\` في **${interaction.guild.name}**`)
+            .setColor(0x2b2d31)
+            .setTimestamp();
+          await creator.send({
+            embeds: [dmEmbed],
+            files: [{ attachment: htmlBuffer, name: `تذكرة-${interaction.channel.name}.html` }]
+          });
+        } catch (e) {}
       }
 
       // حذف السجل من قاعدة البيانات
       await deleteTicketLog(interaction.channel.id);
 
-      // حذف القناة
-      await interaction.reply({ content: '🔒 جاري إغلاق التذكرة...', ephemeral: false });
+      // حذف القناة بعد مهلة (5 ثوانٍ لإتاحة قراءة التقرير)
       setTimeout(async () => {
         try {
           await interaction.channel.delete();
