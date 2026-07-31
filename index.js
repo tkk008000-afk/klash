@@ -1,5 +1,5 @@
 // ============================================================
-// البوت المتكامل - النسخة النهائية بجميع الميزات
+// البوت المتكامل - النسخة النهائية مع سجلات التذاكر ومكافآت الرسائل والفويس
 // ============================================================
 
 const {
@@ -40,6 +40,7 @@ mongoose.connect(MONGO_URL)
 const ConfigSchema = new mongoose.Schema({
   guildId: { type: String, unique: true, required: true },
   logChannel: String,
+  ticketLogChannel: String, // قناة سجلات التذاكر
   welcomeChannel: String,
   welcomeMessage: { type: String, default: 'أهلاً بك في السيرفر! 🎉' },
   welcomeTitle: { type: String, default: '🔥 مرحباً بك في المجتمع' },
@@ -81,7 +82,7 @@ const UserSchema = new mongoose.Schema({
   kl: { type: Number, default: 0 },
   adminPoints: { type: Number, default: 0 },
   lastDaily: Date,
-  lastVoiceReward: { type: Date, default: null }, // لتتبع منح الفويس
+  lastVoiceReward: { type: Date, default: null },
   assignedTasks: [{ taskId: mongoose.Schema.Types.ObjectId, status: { type: String, enum: ['pending', 'accepted', 'completed'], default: 'pending' } }],
   leave: { isOnLeave: { type: Boolean, default: false }, leaveEnd: Date, savedRoles: [String] },
   purchasedRoles: [String],
@@ -165,6 +166,20 @@ const TicketSettingsSchema = new mongoose.Schema({
   image: { type: String, default: 'https://i.imgur.com/GkKqN3G.png' },
 });
 const TicketSettings = mongoose.model('TicketSettings', TicketSettingsSchema);
+
+// ====== نموذج سجلات التذاكر ======
+const TicketLogSchema = new mongoose.Schema({
+  guildId: String,
+  channelId: String,
+  userId: String,
+  section: String,
+  createdAt: { type: Date, default: Date.now },
+  status: { type: String, enum: ['open', 'claimed', 'closed'], default: 'open' },
+  claimedBy: { type: String, default: null },
+  addedMembers: [String],
+  closedAt: { type: Date, default: null },
+});
+const TicketLog = mongoose.model('TicketLog', TicketLogSchema);
 
 const AutoLineSchema = new mongoose.Schema({
   guildId: { type: String, required: true },
@@ -265,6 +280,22 @@ async function getTicketSettings(guildId) {
 }
 async function saveTicketSettings(guildId, data) {
   await TicketSettings.findOneAndUpdate({ guildId }, data, { upsert: true });
+}
+
+// سجلات التذاكر
+async function createTicketLog(guildId, channelId, userId, section) {
+  const log = new TicketLog({ guildId, channelId, userId, section });
+  await log.save();
+  return log;
+}
+async function getTicketLogByChannel(channelId) {
+  return await TicketLog.findOne({ channelId });
+}
+async function updateTicketLog(channelId, data) {
+  await TicketLog.findOneAndUpdate({ channelId }, data, { upsert: true });
+}
+async function deleteTicketLog(channelId) {
+  await TicketLog.deleteOne({ channelId });
 }
 
 // الأوتو لاين
@@ -377,7 +408,7 @@ async function setModLogin(guildId, userId, password) {
   await ModLogin.findOneAndUpdate({ guildId, userId }, { modPassword: password, lastLogin: new Date() }, { upsert: true });
 }
 
-// سجلات
+// سجلات عامة
 async function logToChannel(guildId, data) {
   try {
     const config = await getGuildConfig(guildId);
@@ -430,7 +461,7 @@ client.once('ready', () => {
   console.log(`👑 صاحب البوت: ${OWNER_ID}`);
   client.user.setActivity('The Kingdom Never Falls.', { type: ActivityType.Watching });
 
-  // ====== نظام منح 1 KL لكل دقيقة في الفويس ======
+  // ====== نظام منح 1 KL لكل دقيقة في الفويس (خاص) ======
   setInterval(async () => {
     const now = Date.now();
     for (const [key, joinTime] of voiceSessions) {
@@ -439,22 +470,28 @@ client.once('ready', () => {
       if (!guild) continue;
       const member = await guild.members.fetch(userId).catch(() => null);
       if (!member) continue;
-      // تأكد من أن العضو لا يزال في قناة صوتية
       if (!member.voice.channel) {
         voiceSessions.delete(key);
         continue;
       }
-      // تأكد من مرور دقيقة على الأقل منذ آخر منح
       const elapsed = now - joinTime;
       if (elapsed >= 60000) {
         const user = await getUser(guildId, userId);
         user.kl += 1;
         await user.save();
-        // تحديث وقت الجلسة لمنح 1 كل دقيقة
         voiceSessions.set(key, now);
+        try {
+          const dmEmbed = new EmbedBuilder()
+            .setColor(0x2b2d31)
+            .setTitle('🎧 مكافأة الفويس')
+            .setDescription(`حصلت على **1 KL** مقابل قضائك دقيقة في الفويس.`)
+            .setFooter({ text: 'استمر في التفاعل لكسب المزيد!' })
+            .setTimestamp();
+          await member.send({ embeds: [dmEmbed] });
+        } catch (e) {}
       }
     }
-  }, 60000); // كل 60 ثانية
+  }, 60000);
 });
 
 // ============================================================
@@ -630,7 +667,6 @@ client.on('messageCreate', async (message) => {
   const userId = message.author.id;
   const config = await getGuildConfig(guildId);
 
-  // ====== المستويات ======
   if (!config.levelChannelId || message.channel.id === config.levelChannelId) {
     const user = await getUser(guildId, userId);
     user.messages += 1;
@@ -639,18 +675,19 @@ client.on('messageCreate', async (message) => {
     let currentLevel = user.level;
     let requiredXP = (currentLevel + 1) * 100;
 
-    // ====== مكافأة كل 30 رسالة ======
+    // ====== مكافأة كل 30 رسالة (خاص) ======
     if (user.messages % 30 === 0 && user.messages > 0) {
       user.kl += 15;
       await user.save();
-      const generalImage = getGeneralImage(message.guild, config);
-      const embed = new EmbedBuilder()
-        .setTitle('💰 مكافأة رسائل!')
-        .setDescription(`${message.author}، وصلت إلى **${user.messages}** رسالة!\nحصلت على **15 KL** 🎉`)
-        .setColor(0x2b2d31)
-        .setTimestamp();
-      if (generalImage) embed.setImage(generalImage);
-      await message.channel.send({ embeds: [embed] }).catch(() => {});
+      try {
+        const dmEmbed = new EmbedBuilder()
+          .setColor(0x2b2d31)
+          .setTitle('📝 مكافأة الرسائل')
+          .setDescription(`وصلت إلى **${user.messages}** رسالة!\nحصلت على **15 KL** 🎉`)
+          .setFooter({ text: 'استمر في الكتابة!' })
+          .setTimestamp();
+        await message.author.send({ embeds: [dmEmbed] });
+      } catch (e) {}
     }
 
     if (user.xp >= requiredXP) {
@@ -721,26 +758,24 @@ client.on('messageCreate', async (message) => {
 });
 
 // ============================================================
-// ========== نظام الصوت (تتبع جلسات الفويس) ==========
+// ========== نظام الصوت ==========
 // ============================================================
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
   const userId = newState.member.id;
   const guildId = newState.guild.id;
 
-  // إذا دخل المستخدم إلى قناة صوتية
   if (newState.channelId && !oldState.channelId) {
     voiceSessions.set(`${guildId}-${userId}`, Date.now());
   }
 
-  // إذا غادر المستخدم القناة الصوتية
   if (!newState.channelId && oldState.channelId) {
     voiceSessions.delete(`${guildId}-${userId}`);
   }
 });
 
 // ============================================================
-// ========== الأوامر النصية ==========
+// ========== الأوامر النصية (كاملة) ==========
 // ============================================================
 
 function isAdminCommand(cmd) {
@@ -974,10 +1009,9 @@ client.on('messageCreate', async (message) => {
     }
 
     // ============================================================
-    // == المتجر (نظام البائعين) ==
+    // == المتجر ==
     // ============================================================
 
-    // بانل إضافة منتج (للمتحكمين)
     if (cmd === 'بانل_اضافة_منتج') {
       if (!(await hasPermission(message.member, guildId))) {
         return message.reply('❌ تحتاج صلاحية متحكم.');
@@ -997,7 +1031,6 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // عرض المتجر للشراء
     if (cmd === 'متجر') {
       const items = await StoreItem.find({ guildId });
       if (!items.length) {
@@ -1059,7 +1092,60 @@ client.on('messageCreate', async (message) => {
     }
 
     // ============================================================
-    // == تعيين الإعدادات (للمالك فقط) ==
+    // == أمر لوق التذكرة ==
+    // ============================================================
+
+    if (cmd === 'لوق_تذكرة' || cmd === 'لوق' || cmd === 'تقرير') {
+      if (!message.channel.name.startsWith('تذكرة-')) {
+        return message.reply('❌ هذا الأمر يُستخدم فقط داخل قنوات التذاكر.');
+      }
+      const log = await getTicketLogByChannel(message.channel.id);
+      if (!log) {
+        return message.reply('❌ لا توجد سجلات لهذه التذكرة.');
+      }
+
+      const creator = await message.guild.members.fetch(log.userId).catch(() => null);
+      const claimedBy = log.claimedBy ? await message.guild.members.fetch(log.claimedBy).catch(() => null) : null;
+      const addedMembersList = log.addedMembers || [];
+      const addedMembersMentions = addedMembersList.length ? addedMembersList.map(id => `<@${id}>`).join(', ') : 'لا يوجد';
+
+      const embed = new EmbedBuilder()
+        .setTitle('📋 تقرير التذكرة')
+        .setColor(0x2b2d31)
+        .addFields(
+          { name: '🆔 معرف القناة', value: `#${message.channel.name}`, inline: true },
+          { name: '👤 منشئ التذكرة', value: creator ? creator.toString() : 'غير معروف', inline: true },
+          { name: '📂 القسم', value: log.section || 'غير محدد', inline: true },
+          { name: '📅 وقت الفتح', value: `<t:${Math.floor(log.createdAt.getTime() / 1000)}:F>`, inline: true },
+          { name: '📌 الحالة', value: log.status === 'open' ? '🟢 مفتوحة' : log.status === 'claimed' ? '🟡 مستلمة' : '🔴 مغلقة', inline: true },
+          { name: '📥 استلمها', value: claimedBy ? claimedBy.toString() : 'لم تستلم بعد', inline: true },
+          { name: '👥 الأعضاء المضافين', value: addedMembersMentions, inline: false },
+          { name: '⏱️ وقت الإغلاق', value: log.closedAt ? `<t:${Math.floor(log.closedAt.getTime() / 1000)}:F>` : 'لم تغلق بعد', inline: true }
+        )
+        .setTimestamp();
+
+      // إرسال إلى قناة السجلات الخاصة بالتذاكر
+      const logChannelId = config.ticketLogChannel;
+      if (logChannelId) {
+        const logChannel = message.guild.channels.cache.get(logChannelId);
+        if (logChannel) {
+          await logChannel.send({ embeds: [embed] });
+        }
+      }
+
+      // إرسال للمنشئ في الخاص
+      if (creator) {
+        try {
+          await creator.send({ embeds: [embed] });
+        } catch (e) {}
+      }
+
+      await message.reply({ content: '✅ تم إرسال تقرير التذكرة إلى قناة السجلات وإلى منشئ التذكرة.', ephemeral: true });
+      return;
+    }
+
+    // ============================================================
+    // == تعيين الإعدادات ==
     // ============================================================
 
     if (cmd === 'تعيين') {
@@ -1075,6 +1161,7 @@ client.on('messageCreate', async (message) => {
           .addFields(
             { name: '👋 الترحيب', value: '`ترحيب #قناة`، `رسالة_ترحيب نص`، `صورة_ترحيب رابط`، `عنوان_ترحيب نص`، `خلفية_ترحيب [لون/رابط]`', inline: false },
             { name: '📋 اللوق', value: '`سجلات #قناة`' },
+            { name: '📋 سجلات التذاكر', value: '`قناة_سجلات_تذاكر #قناة`' },
             { name: '📊 المستويات', value: '`روم_ليفل #قناة`' },
             { name: '🤖 الأوتو لاين', value: '`اوتر_لاين #روم [نص]`، `صورة_اوترلاين #روم رابط`، `تفعيل_اوترلاين #روم`، `تعطيل_اوترلاين #روم`، `حذف_اوترلاين #روم`' },
             { name: '🎫 التذاكر', value: '`تذكرة` (لإدارة الأقسام)' },
@@ -1095,7 +1182,21 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // ---- صورة المتجر ----
+      // ---- قناة سجلات التذاكر ----
+      if (sub === 'قناة_سجلات_تذاكر' || sub === 'سجلات_تذاكر') {
+        const channel = message.mentions.channels.first();
+        if (!channel) {
+          await updateGuildConfig(guildId, { ticketLogChannel: null });
+          await message.reply('✅ تم إلغاء تعيين قناة سجلات التذاكر.');
+          return;
+        }
+        await updateGuildConfig(guildId, { ticketLogChannel: channel.id });
+        await logToChannel(guildId, { title: '⚙️ إعدادات', color: 0x2b2d31, description: `**${message.author}** عيّن قناة سجلات التذاكر إلى ${channel}` });
+        await message.reply(`✅ تم تعيين قناة سجلات التذاكر إلى ${channel}`);
+        return;
+      }
+
+      // ---- باقي الإعدادات ----
       if (sub === 'صورة_المتجر') {
         if (!value) {
           await updateGuildConfig(guildId, { storePanelImage: null });
@@ -1111,7 +1212,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // ---- قناة المتجر ----
       if (sub === 'قناة_المتجر') {
         const channel = message.mentions.channels.first();
         if (!channel) {
@@ -1125,7 +1225,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // ---- رتبة البائع ----
       if (sub === 'رتبة_بائع') {
         const role = message.mentions.roles.first();
         if (!role) { await message.reply('⚠️ منشن الرتبة.'); return; }
@@ -1134,7 +1233,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // ---- الترحيب ----
       if (sub === 'ترحيب') {
         const channel = message.mentions.channels.first();
         if (!channel) {
@@ -1536,7 +1634,7 @@ client.on('messageCreate', async (message) => {
           { name: '🛒 المتجر', value: '`!بانل_اضافة_منتج` (للمتحكمين) – لإضافة منتج\n`!متجر` – شراء رتبة عبر القائمة المنسدلة\nيتطلب رتبة بائع (تُعيّن بـ `!تعيين رتبة_بائع`)', inline: false },
           { name: '🔐 تسجيل الدخول', value: '`!تسجيل_الدخول` (للمودات)', inline: false },
           { name: '📊 المستويات', value: '`!مستوى` `!ترتيب`', inline: false },
-          { name: '🎫 التذاكر', value: '`!بانل` `!عرض_تذكرة` `!تعيين تذكرة`', inline: false },
+          { name: '🎫 التذاكر', value: '`!بانل` `!عرض_تذكرة` `!تعيين تذكرة`\n`!لوق_تذكرة` (داخل التذكرة)', inline: false },
           { name: '💡 الاقتراحات', value: '`!بانل_اقتراح`', inline: false },
           { name: '🛡️ الإدارة', value: 'حظر، طرد، كتم، تحذير، مسح، قفل، فتح، نقل_كل، طرد_صوتي، كتم_صوتي، فك_كتم_صوتي، إدارة الرتب، القنوات', inline: false },
           { name: '⚙️ الإعدادات', value: '`!تعيين` (للمالك فقط)', inline: false }
@@ -2718,6 +2816,9 @@ client.on('interactionCreate', async (interaction) => {
         ]
       });
       
+      // إنشاء سجل التذكرة
+      await createTicketLog(guildId, channel.id, interaction.user.id, sectionName);
+      
       // الأزرار الجديدة: استلام، إضافة عضو، إغلاق
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -2764,12 +2865,14 @@ client.on('interactionCreate', async (interaction) => {
         ManageChannels: true,
       });
       
+      // تحديث السجل
+      await updateTicketLog(interaction.channel.id, { claimedBy: interaction.user.id, status: 'claimed' });
+      
       await interaction.reply({
         content: `✅ ${interaction.user} استلم التذكرة وسيكون مسؤولاً عنها.`,
         ephemeral: false
       });
       
-      // إرسال تنبيه في القناة
       await interaction.channel.send(`📥 تم استلام التذكرة بواسطة ${interaction.user}.`);
       return;
     }
@@ -2811,6 +2914,16 @@ client.on('interactionCreate', async (interaction) => {
         SendMessages: true,
       });
       
+      // تحديث السجل بإضافة العضو
+      const log = await getTicketLogByChannel(interaction.channel.id);
+      if (log) {
+        const added = log.addedMembers || [];
+        if (!added.includes(memberId)) {
+          added.push(memberId);
+          await updateTicketLog(interaction.channel.id, { addedMembers: added });
+        }
+      }
+      
       await interaction.reply({
         content: `✅ تم إضافة ${member} إلى التذكرة.`,
         ephemeral: true
@@ -2825,6 +2938,9 @@ client.on('interactionCreate', async (interaction) => {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
       }
+      
+      // تحديث السجل بالإغلاق
+      await updateTicketLog(interaction.channel.id, { status: 'closed', closedAt: new Date() });
       
       await interaction.reply({ content: '🔒 جاري إغلاق التذكرة...', ephemeral: false });
       
