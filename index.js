@@ -1,5 +1,5 @@
 // ============================================================
-// البوت المتكامل - النسخة النهائية مع سجلات التذاكر ومكافآت الرسائل والفويس
+// البوت المتكامل - النسخة النهائية مع سجلات التذاكر (HTML) ومكافآت الفويس والرسائل
 // ============================================================
 
 const {
@@ -40,7 +40,7 @@ mongoose.connect(MONGO_URL)
 const ConfigSchema = new mongoose.Schema({
   guildId: { type: String, unique: true, required: true },
   logChannel: String,
-  ticketLogChannel: String, // قناة سجلات التذاكر
+  ticketLogChannel: String,
   welcomeChannel: String,
   welcomeMessage: { type: String, default: 'أهلاً بك في السيرفر! 🎉' },
   welcomeTitle: { type: String, default: '🔥 مرحباً بك في المجتمع' },
@@ -167,7 +167,6 @@ const TicketSettingsSchema = new mongoose.Schema({
 });
 const TicketSettings = mongoose.model('TicketSettings', TicketSettingsSchema);
 
-// ====== نموذج سجلات التذاكر ======
 const TicketLogSchema = new mongoose.Schema({
   guildId: String,
   channelId: String,
@@ -245,7 +244,6 @@ async function getUser(guildId, userId) {
   return user;
 }
 
-// الصلاحيات الأساسية
 async function isController(userId, guildId) {
   if (OWNER_ID && userId === OWNER_ID) return true;
   const c = await Controller.findOne({ guildId, userId });
@@ -269,7 +267,6 @@ async function isJuniorAdmin(member, guildId) {
   return member.roles.cache.has(config.juniorAdminRole) || await isSeniorAdmin(member, guildId);
 }
 
-// التذاكر
 async function getTicketSettings(guildId) {
   let settings = await TicketSettings.findOne({ guildId });
   if (!settings) {
@@ -282,7 +279,6 @@ async function saveTicketSettings(guildId, data) {
   await TicketSettings.findOneAndUpdate({ guildId }, data, { upsert: true });
 }
 
-// سجلات التذاكر
 async function createTicketLog(guildId, channelId, userId, section) {
   const log = new TicketLog({ guildId, channelId, userId, section });
   await log.save();
@@ -298,7 +294,6 @@ async function deleteTicketLog(channelId) {
   await TicketLog.deleteOne({ channelId });
 }
 
-// الأوتو لاين
 async function getAutoLine(guildId, channelId) {
   let auto = await AutoLine.findOne({ guildId, channelId });
   if (!auto) {
@@ -314,7 +309,6 @@ async function deleteAutoLine(guildId, channelId) {
   await AutoLine.deleteOne({ guildId, channelId });
 }
 
-// الردود التلقائية
 async function getAutoReplies(guildId) { return await AutoReply.find({ guildId }); }
 async function addAutoReply(guildId, keyword, reply, image = null) {
   const existing = await AutoReply.findOne({ guildId, keyword: { $regex: new RegExp(`^${keyword}$`, 'i') } });
@@ -337,7 +331,6 @@ async function findAutoReply(guildId, content) {
   return replies.find(r => content.toLowerCase().includes(r.keyword.toLowerCase()));
 }
 
-// التحذيرات
 async function getWarns(guildId, userId) { return await Warn.find({ guildId, userId }); }
 async function addWarn(guildId, userId, reason, moderator) {
   const warn = new Warn({ guildId, userId, reason, moderator });
@@ -346,7 +339,6 @@ async function addWarn(guildId, userId, reason, moderator) {
 }
 async function clearWarns(guildId, userId) { await Warn.deleteMany({ guildId, userId }); }
 
-// المتحكمين
 async function addController(guildId, userId) {
   const existing = await Controller.findOne({ guildId, userId });
   if (!existing) {
@@ -365,7 +357,6 @@ async function getControllers(guildId) {
   return docs.map(d => d.userId);
 }
 
-// كول داون تغيير الاسم
 async function setNameCooldown(userId) {
   await NameCooldown.findOneAndUpdate({ userId }, { timestamp: new Date() }, { upsert: true });
 }
@@ -374,7 +365,6 @@ async function getNameCooldown(userId) {
   return cd ? cd.timestamp : null;
 }
 
-// المتجر
 async function getStoreItems(guildId) { return await StoreItem.find({ guildId }); }
 async function addStoreItem(guildId, roleId, price, description) {
   const item = new StoreItem({ guildId, roleId, price, description });
@@ -385,7 +375,6 @@ async function removeStoreItem(guildId, itemId) {
   return await StoreItem.deleteOne({ guildId, _id: itemId });
 }
 
-// طلبات الشراء
 async function createPendingPurchase(guildId, userId, roleId, roleName, price) {
   const purchase = new PendingPurchase({ guildId, userId, roleId, roleName, price });
   await purchase.save();
@@ -402,13 +391,11 @@ async function completePendingPurchase(guildId, userId) {
   return purchase;
 }
 
-// المودات
 async function getModLogin(guildId, userId) { return await ModLogin.findOne({ guildId, userId }); }
 async function setModLogin(guildId, userId, password) {
   await ModLogin.findOneAndUpdate({ guildId, userId }, { modPassword: password, lastLogin: new Date() }, { upsert: true });
 }
 
-// سجلات عامة
 async function logToChannel(guildId, data) {
   try {
     const config = await getGuildConfig(guildId);
@@ -430,12 +417,79 @@ async function logToChannel(guildId, data) {
   }
 }
 
-// الصورة العامة
 function getGeneralImage(guild, config) {
   if (config.generalImage) return config.generalImage;
   if (config.bannerImage) return config.bannerImage;
   if (guild.iconURL()) return guild.iconURL({ size: 1024 });
   return null;
+}
+
+// ====== دالة توليد ملف HTML ======
+async function generateTicketHTML(channel, logData) {
+  const messages = await channel.messages.fetch({ limit: 1000 });
+  const sortedMessages = Array.from(messages.values()).reverse();
+
+  const creator = await channel.guild.members.fetch(logData.userId).catch(() => null);
+  const creatorName = creator ? creator.user.tag : 'غير معروف';
+
+  let messagesHTML = '';
+  for (const msg of sortedMessages) {
+    const author = msg.author.tag;
+    const content = msg.content || '(رسالة فارغة)';
+    const timestamp = `<t:${Math.floor(msg.createdTimestamp / 1000)}:F>`;
+    const attachments = msg.attachments.size > 0
+      ? msg.attachments.map(a => `<a href="${a.url}" target="_blank">${a.name}</a>`).join(' ')
+      : '';
+
+    messagesHTML += `
+      <div class="message">
+        <div class="author">${author}</div>
+        <div class="content">${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+        <div class="attachments">${attachments}</div>
+        <div class="timestamp">${timestamp}</div>
+      </div>
+    `;
+  }
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>تقرير التذكرة - ${channel.name}</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #2b2d31; color: #e0e0e0; padding: 20px; direction: rtl; }
+    .container { max-width: 800px; margin: auto; background: #1e1e22; border-radius: 10px; padding: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.5); }
+    h1 { color: #fff; text-align: center; }
+    .info { background: #2b2d31; padding: 10px; border-radius: 8px; margin-bottom: 20px; }
+    .info span { color: #aaa; }
+    .message { background: #2b2d31; margin: 8px 0; padding: 10px; border-radius: 6px; border-right: 3px solid #5865f2; }
+    .author { font-weight: bold; color: #5865f2; }
+    .content { margin: 4px 0; }
+    .attachments { color: #00ffaa; font-size: 0.9em; }
+    .timestamp { color: #888; font-size: 0.8em; margin-top: 4px; }
+    .footer { text-align: center; margin-top: 20px; font-size: 0.9em; color: #666; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📋 تقرير التذكرة</h1>
+    <div class="info">
+      <div><span>القناة:</span> #${channel.name}</div>
+      <div><span>منشئ التذكرة:</span> ${creatorName}</div>
+      <div><span>القسم:</span> ${logData.section || 'غير محدد'}</div>
+      <div><span>تاريخ الفتح:</span> <t:${Math.floor(logData.createdAt.getTime() / 1000)}:F></div>
+      <div><span>الحالة:</span> ${logData.status === 'closed' ? 'مغلقة' : 'مفتوحة'}</div>
+      <div><span>عدد الرسائل:</span> ${sortedMessages.length}</div>
+    </div>
+    <h2>المحادثة</h2>
+    ${messagesHTML}
+    <div class="footer">تم إنشاء هذا التقرير تلقائياً بواسطة البوت.</div>
+  </div>
+</body>
+</html>
+  `;
+  return html;
 }
 
 // ============================================================
@@ -453,7 +507,6 @@ const client = new Client({
   ],
 });
 
-// جلسات الصوت (لتتبع وقت المستخدمين)
 const voiceSessions = new Map();
 
 client.once('ready', () => {
@@ -675,7 +728,6 @@ client.on('messageCreate', async (message) => {
     let currentLevel = user.level;
     let requiredXP = (currentLevel + 1) * 100;
 
-    // ====== مكافأة كل 30 رسالة (خاص) ======
     if (user.messages % 30 === 0 && user.messages > 0) {
       user.kl += 15;
       await user.save();
@@ -721,7 +773,6 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // الأوتو لاين
   const auto = await AutoLine.findOne({ guildId, channelId: message.channel.id });
   if (auto && auto.enabled && (auto.text || auto.image)) {
     const channel = client.channels.cache.get(message.channel.id);
@@ -741,7 +792,6 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // الردود التلقائية
   const autoReply = await findAutoReply(guildId, message.content);
   if (autoReply) {
     try {
@@ -775,7 +825,7 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 });
 
 // ============================================================
-// ========== الأوامر النصية (كاملة) ==========
+// ========== الأوامر النصية ==========
 // ============================================================
 
 function isAdminCommand(cmd) {
@@ -1124,7 +1174,6 @@ client.on('messageCreate', async (message) => {
         )
         .setTimestamp();
 
-      // إرسال إلى قناة السجلات الخاصة بالتذاكر
       const logChannelId = config.ticketLogChannel;
       if (logChannelId) {
         const logChannel = message.guild.channels.cache.get(logChannelId);
@@ -1133,7 +1182,6 @@ client.on('messageCreate', async (message) => {
         }
       }
 
-      // إرسال للمنشئ في الخاص
       if (creator) {
         try {
           await creator.send({ embeds: [embed] });
@@ -1161,7 +1209,7 @@ client.on('messageCreate', async (message) => {
           .addFields(
             { name: '👋 الترحيب', value: '`ترحيب #قناة`، `رسالة_ترحيب نص`، `صورة_ترحيب رابط`، `عنوان_ترحيب نص`، `خلفية_ترحيب [لون/رابط]`', inline: false },
             { name: '📋 اللوق', value: '`سجلات #قناة`' },
-            { name: '📋 سجلات التذاكر', value: '`قناة_سجلات_تذاكر #قناة`' },
+            { name: '📋 سجلات التذاكر (HTML)', value: '`قناة_سجلات_تذاكر #قناة`' },
             { name: '📊 المستويات', value: '`روم_ليفل #قناة`' },
             { name: '🤖 الأوتو لاين', value: '`اوتر_لاين #روم [نص]`، `صورة_اوترلاين #روم رابط`، `تفعيل_اوترلاين #روم`، `تعطيل_اوترلاين #روم`، `حذف_اوترلاين #روم`' },
             { name: '🎫 التذاكر', value: '`تذكرة` (لإدارة الأقسام)' },
@@ -1182,7 +1230,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // ---- قناة سجلات التذاكر ----
       if (sub === 'قناة_سجلات_تذاكر' || sub === 'سجلات_تذاكر') {
         const channel = message.mentions.channels.first();
         if (!channel) {
@@ -1196,7 +1243,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // ---- باقي الإعدادات ----
       if (sub === 'صورة_المتجر') {
         if (!value) {
           await updateGuildConfig(guildId, { storePanelImage: null });
@@ -1436,7 +1482,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // التذاكر
       if (sub === 'تذكرة') {
         const settings = await getTicketSettings(guildId);
         const action = args[1]?.toLowerCase();
@@ -1678,7 +1723,6 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // متحكم
     if (cmd === 'متحكم' || cmd === 'تعيين_متحكم') {
       if (message.author.id !== OWNER_ID) return message.reply('❌ هذا الأمر للمالك فقط.');
       const member = message.mentions.members.first();
@@ -2297,10 +2341,6 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    // ============================================================
-    // == إيقاف ==
-    // ============================================================
-
     if (cmd === 'إيقاف') {
       if (message.author.id !== OWNER_ID) return message.reply('❌ هذا الأمر للمالك فقط.');
       sentReply = await message.reply('🛑 جاري الإيقاف...');
@@ -2317,7 +2357,7 @@ client.on('messageCreate', async (message) => {
 });
 
 // ============================================================
-// ========== معالج التفاعلات (الأزرار، القوائم، المودالات) ==========
+// ========== معالج التفاعلات ==========
 // ============================================================
 
 client.on('interactionCreate', async (interaction) => {
@@ -2326,7 +2366,7 @@ client.on('interactionCreate', async (interaction) => {
 
   try {
 
-    // ----- زر فتح مودال طلب الإجازة -----
+    // ----- طلب إجازة -----
     if (interaction.isButton() && interaction.customId === 'open_leave_modal') {
       const hasPerm = await isJuniorAdmin(interaction.member, guildId);
       if (!hasPerm) return interaction.reply({ content: '❌ هذا الزر مخصص للإداريين فقط.', ephemeral: true });
@@ -2345,7 +2385,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- مودال طلب الإجازة -----
     if (interaction.isModalSubmit() && interaction.customId === 'leave_modal') {
       const reason = interaction.fields.getTextInputValue('leave_reason');
       const duration = parseInt(interaction.fields.getTextInputValue('leave_duration'));
@@ -2379,7 +2418,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- أزرار الموافقة على الإجازات -----
     if (interaction.isButton() && interaction.customId.startsWith('leave_')) {
       const parts = interaction.customId.split('_');
       const action = parts[1];
@@ -2425,7 +2463,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- أزرار المهام (إنشاء، عرض، إنهاء) -----
+    // ----- المهام -----
     if (interaction.isButton() && interaction.customId.startsWith('task_')) {
       const action = interaction.customId.split('_')[1];
       if (action === 'create') {
@@ -2484,7 +2522,6 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // ----- مودال إنشاء مهمة -----
     if (interaction.isModalSubmit() && interaction.customId === 'task_create_modal') {
       const title = interaction.fields.getTextInputValue('task_title');
       const desc = interaction.fields.getTextInputValue('task_desc');
@@ -2511,7 +2548,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- اختيار مهمة لإنهائها (يعرض مودال إثبات) -----
     if (interaction.isStringSelectMenu() && interaction.customId === 'task_complete_select') {
       const taskId = interaction.values[0];
       const task = await Task.findById(taskId);
@@ -2543,7 +2579,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- تقديم الإثبات وإنهاء المهمة -----
     if (interaction.isModalSubmit() && interaction.customId.startsWith('task_proof_')) {
       const taskId = interaction.customId.split('_')[2];
       const task = await Task.findById(taskId);
@@ -2579,9 +2614,7 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.followUp({ content: `🎉 لقد تجاوزت نقاط الترقية، لكن لا توجد رتبة أعلى متاحة.`, ephemeral: true });
         }
       }
-      // ====== إصلاح الخطأ هنا ======
       const creator = await interaction.guild.members.fetch(task.assignedBy).catch(() => null);
-      // ==============================
       await interaction.reply({
         content: `✅ تم إنهاء المهمة **${task.title}**\nحصلت على **${task.points} KL** و **${task.adminPoints} نقاط إدارية**.\nالإثبات: ${proofText}${proofImage ? `\n[صورة](${proofImage})` : ''}`,
         ephemeral: true
@@ -2589,11 +2622,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ============================================================
-    // == معالجات المتجر (الجديدة) ==
-    // ============================================================
-
-    // ----- زر فتح مودال إضافة منتج -----
+    // ----- المتجر -----
     if (interaction.isButton() && interaction.customId === 'open_add_product_modal') {
       if (!(await hasPermission(interaction.member, guildId))) {
         return interaction.reply({ content: '❌ ليس لديك صلاحية.', ephemeral: true });
@@ -2631,7 +2660,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- مودال إضافة منتج -----
     if (interaction.isModalSubmit() && interaction.customId === 'add_product_modal') {
       if (!(await hasPermission(interaction.member, guildId))) {
         return interaction.reply({ content: '❌ ليس لديك صلاحية.', ephemeral: true });
@@ -2656,7 +2684,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- اختيار منتج من المتجر (إنشاء طلب) -----
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('store_buy_')) {
       const itemId = interaction.values[0];
       const item = await StoreItem.findById(itemId);
@@ -2667,15 +2694,12 @@ client.on('interactionCreate', async (interaction) => {
       if (!role) {
         return interaction.reply({ content: '❌ الرتبة غير موجودة حالياً.', ephemeral: true });
       }
-      // التحقق من أن المستخدم ليس لديه طلب معلق
       const existing = await PendingPurchase.findOne({ guildId, userId: interaction.user.id, status: 'pending' });
       if (existing) {
         return interaction.reply({ content: '⚠️ لديك طلب شراء معلق بالفعل. انتظر حتى تتم معالجته.', ephemeral: true });
       }
-      // إنشاء طلب الشراء
       const purchase = await createPendingPurchase(guildId, interaction.user.id, item.roleId, role.name, item.price);
       
-      // إرسال الطلب إلى قناة البائعين
       const config = await getGuildConfig(guildId);
       const storeChannel = config.storeChannel ? interaction.guild.channels.cache.get(config.storeChannel) : null;
       if (!storeChannel) {
@@ -2704,7 +2728,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- أزرار الموافقة على الشراء -----
     if (interaction.isButton() && interaction.customId.startsWith('store_')) {
       const parts = interaction.customId.split('_');
       const action = parts[1];
@@ -2718,7 +2741,6 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       const config = await getGuildConfig(guildId);
-      // التحقق من صلاحية البائع أو المتحكم
       const isSeller = config.sellerRole && interaction.member.roles.cache.has(config.sellerRole);
       const isAdmin = await hasPermission(interaction.member, guildId);
       if (!isSeller && !isAdmin) {
@@ -2734,16 +2756,13 @@ client.on('interactionCreate', async (interaction) => {
         if (!role) {
           return interaction.reply({ content: '❌ الرتبة غير موجودة.', ephemeral: true });
         }
-        // خصم العملات
         const user = await getUser(guildId, purchase.userId);
         if (user.kl < purchase.price) {
           return interaction.reply({ content: `⚠️ رصيد المستخدم غير كافٍ. لديه ${user.kl} KL فقط.`, ephemeral: true });
         }
         user.kl -= purchase.price;
         await user.save();
-        // منح الرتبة
         await member.roles.add(role);
-        // تحديث حالة الطلب
         purchase.status = 'completed';
         await purchase.save();
         
@@ -2795,7 +2814,6 @@ client.on('interactionCreate', async (interaction) => {
       
       const role = section.roleId ? interaction.guild.roles.cache.get(section.roleId) : null;
       
-      // إنشاء قناة التذكرة
       const channel = await interaction.guild.channels.create({
         name: `تذكرة-${interaction.user.username}`,
         type: ChannelType.GuildText,
@@ -2816,10 +2834,8 @@ client.on('interactionCreate', async (interaction) => {
         ]
       });
       
-      // إنشاء سجل التذكرة
       await createTicketLog(guildId, channel.id, interaction.user.id, sectionName);
       
-      // الأزرار الجديدة: استلام، إضافة عضو، إغلاق
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId('claim_ticket')
@@ -2854,18 +2870,16 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- استلام التذكرة (claim) -----
+    // ----- استلام التذكرة -----
     if (interaction.isButton() && interaction.customId === 'claim_ticket') {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
       }
       
-      // منح العضو صلاحية إدارة القناة
       await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
         ManageChannels: true,
       });
       
-      // تحديث السجل
       await updateTicketLog(interaction.channel.id, { claimedBy: interaction.user.id, status: 'claimed' });
       
       await interaction.reply({
@@ -2877,7 +2891,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- إضافة عضو إلى التذكرة (مودال) -----
+    // ----- إضافة عضو -----
     if (interaction.isButton() && interaction.customId === 'add_member_ticket') {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
@@ -2900,7 +2914,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- مودال إضافة عضو -----
     if (interaction.isModalSubmit() && interaction.customId === 'add_member_modal') {
       const memberId = interaction.fields.getTextInputValue('member_id').trim();
       const member = await interaction.guild.members.fetch(memberId).catch(() => null);
@@ -2908,13 +2921,11 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '❌ العضو غير موجود.', ephemeral: true });
       }
       
-      // إضافة صلاحيات للعضو في قناة التذكرة
       await interaction.channel.permissionOverwrites.edit(member.id, {
         ViewChannel: true,
         SendMessages: true,
       });
       
-      // تحديث السجل بإضافة العضو
       const log = await getTicketLogByChannel(interaction.channel.id);
       if (log) {
         const added = log.addedMembers || [];
@@ -2933,17 +2944,62 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- إغلاق التذكرة -----
+    // ----- إغلاق التذكرة مع إرسال HTML -----
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
       }
-      
-      // تحديث السجل بالإغلاق
+
+      // تحديث السجل
       await updateTicketLog(interaction.channel.id, { status: 'closed', closedAt: new Date() });
-      
+      const log = await getTicketLogByChannel(interaction.channel.id);
+
+      // توليد ملف HTML
+      const html = await generateTicketHTML(interaction.channel, log);
+      const buffer = Buffer.from(html, 'utf-8');
+
+      // إرسال إلى قناة السجلات
+      const config = await getGuildConfig(guildId);
+      const logChannelId = config.ticketLogChannel;
+      if (logChannelId) {
+        const logChannel = interaction.guild.channels.cache.get(logChannelId);
+        if (logChannel) {
+          const embed = new EmbedBuilder()
+            .setTitle('📋 تقرير التذكرة - HTML')
+            .setDescription(`تم إغلاق التذكرة \`${interaction.channel.name}\``)
+            .setColor(0x2b2d31)
+            .setTimestamp();
+          await logChannel.send({
+            content: `📋 تقرير التذكرة: ${interaction.channel.name}`,
+            embeds: [embed],
+            files: [{ attachment: buffer, name: `تذكرة-${interaction.channel.name}.html` }]
+          });
+        }
+      }
+
+      // إرسال إلى خاص منشئ التذكرة
+      if (log) {
+        const creator = await interaction.guild.members.fetch(log.userId).catch(() => null);
+        if (creator) {
+          try {
+            const dmEmbed = new EmbedBuilder()
+              .setTitle('📋 تقرير تذكرتك')
+              .setDescription(`تم إغلاق تذكرتك \`${interaction.channel.name}\` في **${interaction.guild.name}**`)
+              .setColor(0x2b2d31)
+              .setTimestamp();
+            await creator.send({
+              embeds: [dmEmbed],
+              files: [{ attachment: buffer, name: `تذكرة-${interaction.channel.name}.html` }]
+            });
+          } catch (e) {}
+        }
+      }
+
+      // حذف السجل من قاعدة البيانات
+      await deleteTicketLog(interaction.channel.id);
+
+      // حذف القناة
       await interaction.reply({ content: '🔒 جاري إغلاق التذكرة...', ephemeral: false });
-      
       setTimeout(async () => {
         try {
           await interaction.channel.delete();
