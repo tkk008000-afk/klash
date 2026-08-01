@@ -1,5 +1,5 @@
 // ============================================================
-// البوت المتكامل - النسخة النهائية مع سجلات التذاكر (HTML) ومكافآت الفويس والرسائل
+// البوت المتكامل - النسخة النهائية مع جميع التحديثات (بادئة / وأوامر سلاش)
 // ============================================================
 
 const {
@@ -43,7 +43,7 @@ const ConfigSchema = new mongoose.Schema({
   guildId: { type: String, unique: true, required: true },
   logChannel: String,
   ticketLogChannel: String,
-  leaveLogChannel: String, // قناة سجلات الاجازات
+  leaveLogChannel: String,
   welcomeChannel: String,
   welcomeMessage: { type: String, default: 'أهلاً بك في السيرفر! 🎉' },
   welcomeTitle: { type: String, default: '🔥 مرحباً بك في المجتمع' },
@@ -122,7 +122,6 @@ const LeaveRequestSchema = new mongoose.Schema({
 });
 const LeaveRequest = mongoose.model('LeaveRequest', LeaveRequestSchema);
 
-// ====== نموذج سجل الاجازات ======
 const LeaveLogSchema = new mongoose.Schema({
   guildId: String,
   userId: String,
@@ -308,7 +307,6 @@ async function deleteTicketLog(channelId) {
   await TicketLog.deleteOne({ channelId });
 }
 
-// ====== دوال سجل الاجازات ======
 async function createLeaveLog(guildId, userId, action, requestId = null, details = '') {
   const log = new LeaveLog({ guildId, userId, action, requestId, details });
   await log.save();
@@ -448,7 +446,6 @@ function getGeneralImage(guild, config) {
   return null;
 }
 
-// ====== دالة توليد ملف HTML ======
 async function generateTicketHTML(channel, logData) {
   let messages = [];
   try {
@@ -587,7 +584,7 @@ client.once('ready', async () => {
     }
   }, 60000);
 
-  // ====== تسجيل أوامر سلاش ======
+  // ====== تسجيل أوامر السلاش (تظهر في شريط الأوامر) ======
   if (CLIENT_ID && CLIENT_ID !== 'YOUR_CLIENT_ID') {
     const commands = [
       new SlashCommandBuilder()
@@ -615,6 +612,7 @@ client.once('ready', async () => {
     }
   } else {
     console.log('⚠️ CLIENT_ID غير مضبوط. لن تعمل أوامر السلاش.');
+    console.log('💡 اضبط CLIENT_ID في متغيرات البيئة وأعد التشغيل.');
   }
 });
 
@@ -785,7 +783,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
-  if (message.content.startsWith('/')) return; // <--- تغيير البادئة من ! إلى /
+  if (message.content.startsWith('/')) return; // البادئة الجديدة
 
   const guildId = message.guild.id;
   const userId = message.author.id;
@@ -905,13 +903,10 @@ client.on('interactionCreate', async (interaction) => {
     const guildId = interaction.guild.id;
     const config = await getGuildConfig(guildId);
 
-    // ----- لوحة الاجازات (سلاش) -----
     if (commandName === 'لوحة_الاجازات') {
-      // التحقق من صلاحية المدير
       if (!config.leaveManagerRole || !interaction.member.roles.cache.has(config.leaveManagerRole)) {
         return interaction.reply({ content: '❌ ليس لديك صلاحية الوصول إلى لوحة الاجازات.', ephemeral: true });
       }
-
       const pending = await LeaveRequest.find({ guildId, status: 'pending' });
       const embed = new EmbedBuilder()
         .setTitle('📅 لوحة إدارة الإجازات')
@@ -923,18 +918,15 @@ client.on('interactionCreate', async (interaction) => {
           { name: '📅 إجازات منتهية', value: `**${await LeaveRequest.countDocuments({ guildId, status: 'approved', endDate: { $lt: new Date() } })}**`, inline: true }
         )
         .setTimestamp();
-
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('leave_panel_pending').setLabel('📋 طلبات معلقة').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('leave_panel_active').setLabel('📊 إجازات نشطة').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId('leave_panel_logs').setLabel('📜 سجل الإجازات').setStyle(ButtonStyle.Secondary)
       );
-
       await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
       return;
     }
 
-    // ----- الاجازات الحالية (سلاش) -----
     if (commandName === 'الاجازات_الحالية') {
       const now = new Date();
       const activeLeaves = await LeaveRequest.find({
@@ -942,11 +934,9 @@ client.on('interactionCreate', async (interaction) => {
         status: 'approved',
         endDate: { $gt: now }
       }).populate('userId');
-
       if (activeLeaves.length === 0) {
         return interaction.reply({ content: '📭 لا توجد إجازات نشطة حالياً.', ephemeral: true });
       }
-
       let desc = '';
       for (const leave of activeLeaves) {
         const member = await interaction.guild.members.fetch(leave.userId).catch(() => null);
@@ -955,7 +945,6 @@ client.on('interactionCreate', async (interaction) => {
         const remainingText = remaining > 0 ? `⏳ متبقي **${remaining}** يوم` : '🔴 انتهت اليوم';
         desc += `**${name}** - ${leave.reason}\n📅 ${remainingText}\n`;
       }
-
       const embed = new EmbedBuilder()
         .setTitle('📊 الإجازات النشطة')
         .setDescription(desc || 'لا توجد إجازات نشطة')
@@ -965,13 +954,11 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- سجل الاجازات (سلاش) -----
     if (commandName === 'سجل_الاجازات') {
       const logs = await getLeaveLogs(guildId, 20);
       if (logs.length === 0) {
         return interaction.reply({ content: '📭 لا توجد سجلات إجازات.', ephemeral: true });
       }
-
       let desc = '';
       for (const log of logs) {
         const member = await interaction.guild.members.fetch(log.userId).catch(() => null);
@@ -984,7 +971,6 @@ client.on('interactionCreate', async (interaction) => {
         };
         desc += `**${name}** ${actionMap[log.action] || log.action} - ${log.details || ''} (${log.timestamp.toLocaleDateString()})\n`;
       }
-
       const embed = new EmbedBuilder()
         .setTitle('📜 سجل الإجازات')
         .setDescription(desc || 'لا توجد سجلات')
@@ -994,9 +980,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- تعيين رتبة مسؤول الإجازات (سلاش) -----
     if (commandName === 'تعيين_رتبة_مسؤول_اجازات') {
-      // فقط للمالك أو من لديه صلاحية
       if (interaction.user.id !== OWNER_ID) {
         return interaction.reply({ content: '❌ هذا الأمر للمالك فقط.', ephemeral: true });
       }
@@ -1027,7 +1011,7 @@ function isAdminCommand(cmd) {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
-  if (!message.content.startsWith('/')) return; // <--- تغيير البادئة من ! إلى /
+  if (!message.content.startsWith('/')) return; // البادئة الجديدة
   const args = message.content.slice(1).trim().split(/ +/);
   const cmd = args.shift().toLowerCase();
   const guildId = message.guild.id;
@@ -1183,19 +1167,16 @@ client.on('messageCreate', async (message) => {
     }
 
     // ============================================================
-    // == الإجازات (محسنة) ==
+    // == الإجازات ==
     // ============================================================
 
     if (cmd === 'بانل_اجازات' || cmd === 'لوحة_اجازات') {
       if (!(await hasPermission(message.member, guildId))) {
         return message.reply('❌ تحتاج صلاحية متحكم.');
       }
-
-      // التحقق من وجود قناة سجلات
       if (!config.leaveLogChannel) {
         await message.reply('⚠️ لم تُعيّن قناة سجلات الإجازات. استخدم `/تعيين قناة_سجلات_اجازات #قناة`');
       }
-
       const embed = new EmbedBuilder()
         .setTitle('📅 لوحة إدارة الإجازات')
         .setDescription('اضغط على الزر أدناه لتقديم طلب إجازة، أو استخدم الأزرار الأخرى للإدارة.')
@@ -1204,22 +1185,18 @@ client.on('messageCreate', async (message) => {
       if (config.leavePanelImage) {
         embed.setImage(config.leavePanelImage);
       }
-
       const pending = await LeaveRequest.find({ guildId, status: 'pending' });
       const active = await LeaveRequest.countDocuments({ guildId, status: 'approved', endDate: { $gt: new Date() } });
-
       embed.addFields(
         { name: '📋 طلبات معلقة', value: pending.length > 0 ? `**${pending.length}** طلب` : 'لا توجد طلبات معلقة', inline: true },
         { name: '📊 إجازات نشطة', value: `**${active}**`, inline: true }
       );
-
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('open_leave_modal').setLabel('📝 طلب إجازة').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('leave_panel_pending').setLabel('📋 طلبات معلقة').setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId('leave_panel_active').setLabel('📊 إجازات نشطة').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId('leave_panel_logs').setLabel('📜 سجل الإجازات').setStyle(ButtonStyle.Secondary)
       );
-
       await message.channel.send({ embeds: [embed], components: [row] });
       await message.reply('✅ تم إنشاء لوحة الإجازات.');
       return;
@@ -1250,7 +1227,6 @@ client.on('messageCreate', async (message) => {
       }
       const pending = await LeaveRequest.find({ guildId, status: 'pending' });
       if (!pending.length) return message.reply('📭 لا توجد طلبات إجازة معلقة.');
-      
       let desc = '';
       for (const req of pending) {
         const member = await message.guild.members.fetch(req.userId).catch(() => null);
@@ -1263,7 +1239,6 @@ client.on('messageCreate', async (message) => {
         .setColor(0x2b2d31)
         .setFooter({ text: `عدد الطلبات: ${pending.length}` })
         .setTimestamp();
-      
       await message.channel.send({ embeds: [embed] });
       return;
     }
@@ -1296,16 +1271,13 @@ client.on('messageCreate', async (message) => {
       if (!items.length) {
         return message.reply('📭 لا توجد منتجات في المتجر حالياً.');
       }
-      
       const embed = new EmbedBuilder()
         .setTitle('🛒 متجر الرتب')
         .setDescription('اختر الرتبة التي تريد شراءها.\nسيتم إرسال طلبك إلى البائعين للموافقة.')
         .setColor(0x2b2d31);
-      
       if (config.storePanelImage) {
         embed.setImage(config.storePanelImage);
       }
-      
       const options = items.map(item => {
         const role = message.guild.roles.cache.get(item.roleId);
         return {
@@ -1315,7 +1287,6 @@ client.on('messageCreate', async (message) => {
           emoji: '🛒',
         };
       });
-      
       const chunkSize = 25;
       const rows = [];
       for (let i = 0; i < options.length; i += chunkSize) {
@@ -1329,7 +1300,6 @@ client.on('messageCreate', async (message) => {
           )
         );
       }
-      
       await message.channel.send({ embeds: [embed], components: rows });
       return;
     }
@@ -1363,7 +1333,6 @@ client.on('messageCreate', async (message) => {
       if (!log) {
         return message.reply('❌ لا توجد سجلات لهذه التذكرة.');
       }
-
       let htmlBuffer = null;
       let generationFailed = false;
       try {
@@ -1373,12 +1342,10 @@ client.on('messageCreate', async (message) => {
         console.error('❌ خطأ في توليد HTML للوق:', e);
         generationFailed = true;
       }
-
       const creator = await message.guild.members.fetch(log.userId).catch(() => null);
       const claimedBy = log.claimedBy ? await message.guild.members.fetch(log.claimedBy).catch(() => null) : null;
       const addedMembersList = log.addedMembers || [];
       const addedMembersMentions = addedMembersList.length ? addedMembersList.map(id => `<@${id}>`).join(', ') : 'لا يوجد';
-
       const embed = new EmbedBuilder()
         .setTitle('📋 تقرير التذكرة')
         .setColor(0x2b2d31)
@@ -1393,7 +1360,6 @@ client.on('messageCreate', async (message) => {
           { name: '⏱️ وقت الإغلاق', value: log.closedAt ? `<t:${Math.floor(log.closedAt.getTime() / 1000)}:F>` : 'لم تغلق بعد', inline: true }
         )
         .setTimestamp();
-
       const replyData = {
         content: `📋 تقرير التذكرة **${message.channel.name}**${generationFailed ? ' ⚠️ (فشل توليد الملف، لكن التقرير النصي معروض)' : ''}`,
         embeds: [embed]
@@ -1402,7 +1368,6 @@ client.on('messageCreate', async (message) => {
         replyData.files = [{ attachment: htmlBuffer, name: `تذكرة-${message.channel.name}.html` }];
       }
       await message.channel.send(replyData);
-
       const logChannelId = config.ticketLogChannel;
       if (logChannelId) {
         const logChannel = message.guild.channels.cache.get(logChannelId);
@@ -1415,7 +1380,6 @@ client.on('messageCreate', async (message) => {
           await logChannel.send(logData).catch(() => {});
         }
       }
-
       if (creator) {
         try {
           const dmEmbed = new EmbedBuilder()
@@ -1428,7 +1392,6 @@ client.on('messageCreate', async (message) => {
           await creator.send(dmData).catch(() => {});
         } catch (e) {}
       }
-
       await message.reply({ content: '✅ تم نشر التقرير في الروم وإرساله إلى قناة السجلات ومنشئ التذكرة.', ephemeral: true });
       return;
     }
@@ -1472,7 +1435,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // ---- قناة سجلات الإجازات ----
       if (sub === 'قناة_سجلات_اجازات' || sub === 'سجلات_اجازات') {
         const channel = message.mentions.channels.first();
         if (!channel) {
@@ -1486,7 +1448,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // ---- قناة سجلات التذاكر ----
       if (sub === 'قناة_سجلات_تذاكر' || sub === 'سجلات_تذاكر') {
         const channel = message.mentions.channels.first();
         if (!channel) {
@@ -1500,7 +1461,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // ---- باقي الإعدادات (نفس الكود السابق) ----
       if (sub === 'صورة_المتجر') {
         if (!value) {
           await updateGuildConfig(guildId, { storePanelImage: null });
@@ -2666,13 +2626,8 @@ client.on('interactionCreate', async (interaction) => {
         endDate: new Date(Date.now() + duration * 24 * 60 * 60 * 1000),
       });
       await request.save();
-
-      // تسجيل في سجل الإجازات
       await createLeaveLog(guildId, interaction.user.id, 'requested', request._id, `${reason} (${duration} يوم)`);
-
       const config = await getGuildConfig(guildId);
-      
-      // إرسال إلى قناة الطلبات
       const channel = config.leaveRequestChannel ? interaction.guild.channels.cache.get(config.leaveRequestChannel) : null;
       if (channel) {
         const embed = new EmbedBuilder()
@@ -2686,8 +2641,6 @@ client.on('interactionCreate', async (interaction) => {
         );
         await channel.send({ content: `<@&${config.leaveManagerRole}>`, embeds: [embed], components: [row] });
       }
-
-      // إرسال إلى قناة سجلات الإجازات
       if (config.leaveLogChannel) {
         const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
         if (logChannel) {
@@ -2699,7 +2652,6 @@ client.on('interactionCreate', async (interaction) => {
           await logChannel.send({ embeds: [logEmbed] });
         }
       }
-
       await interaction.reply({ content: '✅ تم إرسال طلب إجازتك بنجاح.', ephemeral: true });
       return;
     }
@@ -2720,9 +2672,7 @@ client.on('interactionCreate', async (interaction) => {
         request.status = 'approved';
         request.approvedBy = interaction.user.id;
         await request.save();
-        
         await createLeaveLog(guildId, request.userId, 'approved', request._id, `بواسطة ${interaction.user.tag}`);
-
         const user = await getUser(guildId, request.userId);
         const member = await interaction.guild.members.fetch(request.userId).catch(() => null);
         if (member) {
@@ -2737,7 +2687,6 @@ client.on('interactionCreate', async (interaction) => {
           if (!leaveRole) leaveRole = await interaction.guild.roles.create({ name: 'إجازة', color: '#808080' });
           await member.roles.add(leaveRole);
         }
-
         if (config.leaveLogChannel) {
           const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
           if (logChannel) {
@@ -2749,7 +2698,6 @@ client.on('interactionCreate', async (interaction) => {
             await logChannel.send({ embeds: [logEmbed] });
           }
         }
-
         await interaction.reply({ content: `✅ تمت الموافقة على إجازة <@${request.userId}>.`, ephemeral: false });
         try {
           const userMember = await interaction.guild.members.fetch(request.userId);
@@ -2758,9 +2706,7 @@ client.on('interactionCreate', async (interaction) => {
       } else if (action === 'reject') {
         request.status = 'rejected';
         await request.save();
-        
         await createLeaveLog(guildId, request.userId, 'rejected', request._id, `بواسطة ${interaction.user.tag}`);
-
         if (config.leaveLogChannel) {
           const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
           if (logChannel) {
@@ -2772,7 +2718,6 @@ client.on('interactionCreate', async (interaction) => {
             await logChannel.send({ embeds: [logEmbed] });
           }
         }
-
         await interaction.reply({ content: `❌ تم رفض إجازة <@${request.userId}>.`, ephemeral: false });
         try {
           const userMember = await interaction.guild.members.fetch(request.userId);
@@ -3088,19 +3033,16 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '⚠️ لديك طلب شراء معلق بالفعل. انتظر حتى تتم معالجته.', ephemeral: true });
       }
       const purchase = await createPendingPurchase(guildId, interaction.user.id, item.roleId, role.name, item.price);
-      
       const config = await getGuildConfig(guildId);
       const storeChannel = config.storeChannel ? interaction.guild.channels.cache.get(config.storeChannel) : null;
       if (!storeChannel) {
         return interaction.reply({ content: '⚠️ لم يتم تعيين قناة المتجر بعد.', ephemeral: true });
       }
-      
       const embed = new EmbedBuilder()
         .setTitle('🛒 طلب شراء جديد')
         .setColor(0x2b2d31)
         .setDescription(`**المشتري:** ${interaction.user} (${interaction.user.id})\n**الرتبة:** ${role.name}\n**السعر:** ${item.price} KL\n**الوصف:** ${item.description || 'لا يوجد'}`)
         .setTimestamp();
-      
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`store_approve_${purchase._id}`)
@@ -3111,7 +3053,6 @@ client.on('interactionCreate', async (interaction) => {
           .setLabel('❌ رفض')
           .setStyle(ButtonStyle.Danger)
       );
-      
       await storeChannel.send({ content: `<@&${config.sellerRole || ''}>`, embeds: [embed], components: [row] });
       await interaction.reply({ content: `✅ تم إرسال طلب شراء **${role.name}** إلى البائعين.`, ephemeral: true });
       return;
@@ -3128,7 +3069,6 @@ client.on('interactionCreate', async (interaction) => {
       if (purchase.status !== 'pending') {
         return interaction.reply({ content: '⚠️ تمت معالجة هذا الطلب مسبقاً.', ephemeral: true });
       }
-      
       const config = await getGuildConfig(guildId);
       const isSeller = config.sellerRole && interaction.member.roles.cache.has(config.sellerRole);
       const isAdmin = await hasPermission(interaction.member, guildId);
@@ -3154,14 +3094,12 @@ client.on('interactionCreate', async (interaction) => {
         await member.roles.add(role);
         purchase.status = 'completed';
         await purchase.save();
-        
         const embed = new EmbedBuilder()
           .setTitle('✅ تم تأكيد الشراء')
           .setColor(0x2b2d31)
           .setDescription(`تم منح **${role.name}** لـ ${member}.\nالسعر: **${purchase.price} KL**\nالموافق: ${interaction.user}`)
           .setTimestamp();
         await interaction.reply({ embeds: [embed], ephemeral: false });
-        
         try {
           const dmEmbed = new EmbedBuilder()
             .setTitle('🎉 تم شراء الرتبة بنجاح!')
@@ -3169,13 +3107,11 @@ client.on('interactionCreate', async (interaction) => {
             .setColor(0x2b2d31);
           await member.send({ embeds: [dmEmbed] });
         } catch (e) {}
-        
         await logToChannel(guildId, {
           title: '🛒 شراء رتبة',
           color: 0x2b2d31,
           description: `**المشتري:** ${member.user.tag}\n**الرتبة:** ${role.name}\n**السعر:** ${purchase.price} KL\n**الموافق:** ${interaction.user.tag}`
         });
-        
       } else if (action === 'reject') {
         purchase.status = 'cancelled';
         await purchase.save();
@@ -3199,49 +3135,33 @@ client.on('interactionCreate', async (interaction) => {
       if (!section) {
         return interaction.reply({ content: '❌ قسم غير موجود.', ephemeral: true });
       }
-      
       const role = section.roleId ? interaction.guild.roles.cache.get(section.roleId) : null;
-      
       const channel = await interaction.guild.channels.create({
         name: `تذكرة-${interaction.user.username}`,
         type: ChannelType.GuildText,
         parent: interaction.channel.parentId,
         permissionOverwrites: [
-          {
-            id: interaction.guild.id,
-            deny: [PermissionsBitField.Flags.ViewChannel],
-          },
-          {
-            id: interaction.user.id,
-            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
-          },
-          ...(role ? [{
-            id: role.id,
-            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
-          }] : [])
+          { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+          { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
+          ...(role ? [{ id: role.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }] : [])
         ]
       });
-      
       await createTicketLog(guildId, channel.id, interaction.user.id, sectionName);
-      
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('claim_ticket').setLabel('📥 استلام التذكرة').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('add_member_ticket').setLabel('➕ إضافة عضو').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId('close_ticket').setLabel('🔒 إغلاق').setStyle(ButtonStyle.Danger)
       );
-      
       const embed = new EmbedBuilder()
         .setTitle('🎫 تذكرة جديدة')
         .setDescription(`**القسم:** ${sectionName}\n**المستخدم:** ${interaction.user}\nاستخدم الأزرار أدناه لإدارة التذكرة.`)
         .setColor(0x2b2d31)
         .setTimestamp();
-      
       await channel.send({
         content: `${interaction.user} ${role ? `<@&${role.id}>` : ''}`,
         embeds: [embed],
         components: [row]
       });
-      
       await interaction.reply({
         content: `✅ تم إنشاء تذكرتك: ${channel}`,
         ephemeral: true
@@ -3253,18 +3173,14 @@ client.on('interactionCreate', async (interaction) => {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
       }
-      
       await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
         ManageChannels: true,
       });
-      
       await updateTicketLog(interaction.channel.id, { claimedBy: interaction.user.id, status: 'claimed' });
-      
       await interaction.reply({
         content: `✅ ${interaction.user} استلم التذكرة وسيكون مسؤولاً عنها.`,
         ephemeral: false
       });
-      
       await interaction.channel.send(`📥 تم استلام التذكرة بواسطة ${interaction.user}.`);
       return;
     }
@@ -3273,7 +3189,6 @@ client.on('interactionCreate', async (interaction) => {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
       }
-      
       const modal = new ModalBuilder()
         .setCustomId('add_member_modal')
         .setTitle('➕ إضافة عضو إلى التذكرة')
@@ -3297,12 +3212,10 @@ client.on('interactionCreate', async (interaction) => {
       if (!member) {
         return interaction.reply({ content: '❌ العضو غير موجود.', ephemeral: true });
       }
-      
       await interaction.channel.permissionOverwrites.edit(member.id, {
         ViewChannel: true,
         SendMessages: true,
       });
-      
       const log = await getTicketLogByChannel(interaction.channel.id);
       if (log) {
         const added = log.addedMembers || [];
@@ -3311,12 +3224,10 @@ client.on('interactionCreate', async (interaction) => {
           await updateTicketLog(interaction.channel.id, { addedMembers: added });
         }
       }
-      
       await interaction.reply({
         content: `✅ تم إضافة ${member} إلى التذكرة.`,
         ephemeral: true
       });
-      
       await interaction.channel.send(`➕ تم إضافة ${member} إلى التذكرة بواسطة ${interaction.user}.`);
       return;
     }
@@ -3325,11 +3236,9 @@ client.on('interactionCreate', async (interaction) => {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
       }
-
       await updateTicketLog(interaction.channel.id, { status: 'closed', closedAt: new Date() });
       const log = await getTicketLogByChannel(interaction.channel.id);
       const config = await getGuildConfig(guildId);
-
       let htmlBuffer = null;
       let generationFailed = false;
       try {
@@ -3339,12 +3248,10 @@ client.on('interactionCreate', async (interaction) => {
         console.error('❌ خطأ في توليد HTML للإغلاق:', e);
         generationFailed = true;
       }
-
       const creator = await interaction.guild.members.fetch(log.userId).catch(() => null);
       const claimedBy = log.claimedBy ? await interaction.guild.members.fetch(log.claimedBy).catch(() => null) : null;
       const addedMembersList = log.addedMembers || [];
       const addedMembersMentions = addedMembersList.length ? addedMembersList.map(id => `<@${id}>`).join(', ') : 'لا يوجد';
-
       const embed = new EmbedBuilder()
         .setTitle('📋 تقرير التذكرة - مغلقة')
         .setColor(0x2b2d31)
@@ -3359,7 +3266,6 @@ client.on('interactionCreate', async (interaction) => {
           { name: '⏱️ وقت الإغلاق', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true }
         )
         .setTimestamp();
-
       const replyData = {
         content: `🔒 تم إغلاق التذكرة.${generationFailed ? ' ⚠️ حدث خطأ أثناء توليد ملف HTML، لكن التقرير النصي موجود أدناه.' : ''}`,
         embeds: [embed]
@@ -3368,7 +3274,6 @@ client.on('interactionCreate', async (interaction) => {
         replyData.files = [{ attachment: htmlBuffer, name: `تذكرة-${interaction.channel.name}.html` }];
       }
       await interaction.reply(replyData);
-
       const logChannelId = config.ticketLogChannel;
       if (logChannelId) {
         const logChannel = interaction.guild.channels.cache.get(logChannelId);
@@ -3381,7 +3286,6 @@ client.on('interactionCreate', async (interaction) => {
           await logChannel.send(logData).catch(() => {});
         }
       }
-
       if (creator) {
         try {
           const dmEmbed = new EmbedBuilder()
@@ -3394,9 +3298,7 @@ client.on('interactionCreate', async (interaction) => {
           await creator.send(dmData).catch(() => {});
         } catch (e) {}
       }
-
       await deleteTicketLog(interaction.channel.id);
-
       setTimeout(async () => {
         try {
           await interaction.channel.delete();
