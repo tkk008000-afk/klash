@@ -599,6 +599,10 @@ client.once('ready', async () => {
       new SlashCommandBuilder()
         .setName('سجل_الاجازات')
         .setDescription('عرض سجل الاجازات (آخر 20)'),
+      new SlashCommandBuilder()
+        .setName('تعيين_رتبة_مسؤول_اجازات')
+        .setDescription('تعيين رتبة مسؤول الإجازات')
+        .addRoleOption(option => option.setName('رتبة').setDescription('الرتبة المطلوبة').setRequired(true)),
     ].map(cmd => cmd.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -781,7 +785,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
-  if (message.content.startsWith('!')) return;
+  if (message.content.startsWith('/')) return; // <--- تغيير البادئة من ! إلى /
 
   const guildId = message.guild.id;
   const userId = message.author.id;
@@ -989,11 +993,26 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ embeds: [embed], ephemeral: true });
       return;
     }
+
+    // ----- تعيين رتبة مسؤول الإجازات (سلاش) -----
+    if (commandName === 'تعيين_رتبة_مسؤول_اجازات') {
+      // فقط للمالك أو من لديه صلاحية
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: '❌ هذا الأمر للمالك فقط.', ephemeral: true });
+      }
+      const role = interaction.options.getRole('رتبة');
+      if (!role) {
+        return interaction.reply({ content: '⚠️ الرجاء تحديد رتبة صحيحة.', ephemeral: true });
+      }
+      await updateGuildConfig(guildId, { leaveManagerRole: role.id });
+      await interaction.reply({ content: `✅ تم تعيين رتبة مسؤول الإجازات إلى ${role}`, ephemeral: true });
+      return;
+    }
   }
 });
 
 // ============================================================
-// ========== الأوامر النصية ==========
+// ========== الأوامر النصية (ببادئة /) ==========
 // ============================================================
 
 function isAdminCommand(cmd) {
@@ -1008,7 +1027,7 @@ function isAdminCommand(cmd) {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
-  if (!message.content.startsWith('!')) return;
+  if (!message.content.startsWith('/')) return; // <--- تغيير البادئة من ! إلى /
   const args = message.content.slice(1).trim().split(/ +/);
   const cmd = args.shift().toLowerCase();
   const guildId = message.guild.id;
@@ -1069,7 +1088,7 @@ client.on('messageCreate', async (message) => {
       const target = message.mentions.members.first();
       const amount = parseInt(args[0]);
       if (!target || !amount || amount <= 0) {
-        await message.reply('⚠️ الاستخدام: `!اعطاء_عملات @شخص <المبلغ>`');
+        await message.reply('⚠️ الاستخدام: `/اعطاء_عملات @شخص <المبلغ>`');
         return;
       }
       if (target.user.bot) {
@@ -1102,7 +1121,7 @@ client.on('messageCreate', async (message) => {
       const target = message.mentions.members.first();
       const amount = parseInt(args[0]);
       if (!target || !amount || amount <= 0) {
-        await message.reply('⚠️ الاستخدام: `!سحب_عملات @شخص <المبلغ>`');
+        await message.reply('⚠️ الاستخدام: `/سحب_عملات @شخص <المبلغ>`');
         return;
       }
       if (target.user.bot) {
@@ -1174,7 +1193,7 @@ client.on('messageCreate', async (message) => {
 
       // التحقق من وجود قناة سجلات
       if (!config.leaveLogChannel) {
-        await message.reply('⚠️ لم تُعيّن قناة سجلات الإجازات. استخدم `!تعيين قناة_سجلات_اجازات #قناة`');
+        await message.reply('⚠️ لم تُعيّن قناة سجلات الإجازات. استخدم `/تعيين قناة_سجلات_اجازات #قناة`');
       }
 
       const embed = new EmbedBuilder()
@@ -1245,7 +1264,6 @@ client.on('messageCreate', async (message) => {
         .setFooter({ text: `عدد الطلبات: ${pending.length}` })
         .setTimestamp();
       
-      // أزرار للتنقل بين الطلبات (سيتم عرضها في معالج التفاعلات)
       await message.channel.send({ embeds: [embed] });
       return;
     }
@@ -1448,7 +1466,7 @@ client.on('messageCreate', async (message) => {
             { name: '🖼️ بانل الإجازات', value: '`صورة_بانل_اجازات [رابط]`' },
             { name: '👤 رتبة البائع', value: '`رتبة_بائع @رتبة`' }
           )
-          .setFooter({ text: 'الصيغة: !تعيين [الخيار] [القيمة]' });
+          .setFooter({ text: 'الصيغة: /تعيين [الخيار] [القيمة]' });
         if (generalImage) embed.setImage(generalImage);
         await message.channel.send({ embeds: [embed] });
         return;
@@ -1732,12 +1750,12 @@ client.on('messageCreate', async (message) => {
             .setTitle('⚙️ إدارة التذاكر')
             .setColor(0x2b2d31)
             .addFields(
-              { name: '➕ إضافة قسم', value: '`!تعيين تذكرة إضافة [الاسم] @دور :ايموجي:`\nمثال: `!تعيين تذكرة إضافة دعم فني @SupportRole 🛠️`' },
-              { name: '🎨 تعيين إيموجي لقسم', value: '`!تعيين تذكرة تعيين_ايموجي [الاسم] :ايموجي:`' },
-              { name: '➖ حذف قسم', value: '`!تعيين تذكرة حذف [الاسم]`' },
-              { name: '📝 تغيير النص', value: '`!تعيين تذكرة نص [النص]`' },
-              { name: '🖼️ تغيير الصورة', value: '`!تعيين تذكرة صورة [رابط]`' },
-              { name: '👀 عرض الأقسام', value: '`!عرض_تذكرة`' }
+              { name: '➕ إضافة قسم', value: '`/تعيين تذكرة إضافة [الاسم] @دور :ايموجي:`\nمثال: `/تعيين تذكرة إضافة دعم فني @SupportRole 🛠️`' },
+              { name: '🎨 تعيين إيموجي لقسم', value: '`/تعيين تذكرة تعيين_ايموجي [الاسم] :ايموجي:`' },
+              { name: '➖ حذف قسم', value: '`/تعيين تذكرة حذف [الاسم]`' },
+              { name: '📝 تغيير النص', value: '`/تعيين تذكرة نص [النص]`' },
+              { name: '🖼️ تغيير الصورة', value: '`/تعيين تذكرة صورة [رابط]`' },
+              { name: '👀 عرض الأقسام', value: '`/عرض_تذكرة`' }
             )
             .setFooter({ text: 'الأقسام الحالية: ' + settings.sections.map(s => `${s.emoji || '📌'} ${s.name}`).join(', ') });
           if (generalImage) embed.setImage(generalImage);
@@ -1747,7 +1765,7 @@ client.on('messageCreate', async (message) => {
 
         if (action === 'إضافة') {
           const parts = actionValue.match(/^(.+?)\s+<@&(\d+)>\s*(\S+)?$/);
-          if (!parts) { await message.reply('⚠️ الصيغة: `!تعيين تذكرة إضافة [الاسم] @دور :ايموجي:`'); return; }
+          if (!parts) { await message.reply('⚠️ الصيغة: `/تعيين تذكرة إضافة [الاسم] @دور :ايموجي:`'); return; }
           const sectionName = parts[1].trim();
           const roleId = parts[2];
           const emoji = parts[3] || '📌';
@@ -1761,7 +1779,7 @@ client.on('messageCreate', async (message) => {
 
         if (action === 'تعيين_ايموجي') {
           const parts = actionValue.match(/^(.+?)\s+(\S+)$/);
-          if (!parts) { await message.reply('⚠️ الصيغة: `!تعيين تذكرة تعيين_ايموجي [الاسم] :ايموجي:`'); return; }
+          if (!parts) { await message.reply('⚠️ الصيغة: `/تعيين تذكرة تعيين_ايموجي [الاسم] :ايموجي:`'); return; }
           const sectionName = parts[1].trim();
           const emoji = parts[2];
           const section = settings.sections.find(s => s.name === sectionName);
@@ -1802,7 +1820,7 @@ client.on('messageCreate', async (message) => {
           return;
         }
 
-        await message.reply('⚠️ أمر غير معروف. استخدم `!تعيين تذكرة` لعرض التعليمات.');
+        await message.reply('⚠️ أمر غير معروف. استخدم `/تعيين تذكرة` لعرض التعليمات.');
         return;
       }
 
@@ -1859,7 +1877,7 @@ client.on('messageCreate', async (message) => {
         const price = parseInt(args[1]);
         const desc = args.slice(2).join(' ');
         if (!role || !price) {
-          await message.reply('⚠️ الصيغة: `!تعيين اضافة_منتج @رتبة السعر [الوصف]`');
+          await message.reply('⚠️ الصيغة: `/تعيين اضافة_منتج @رتبة السعر [الوصف]`');
           return;
         }
         await addStoreItem(guildId, role.id, price, desc || 'لا يوجد وصف');
@@ -1906,7 +1924,7 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      await message.reply('⚠️ خيار غير معروف. استخدم `!تعيين` لعرض القائمة.');
+      await message.reply('⚠️ خيار غير معروف. استخدم `/تعيين` لعرض القائمة.');
       return;
     }
 
@@ -1919,19 +1937,19 @@ client.on('messageCreate', async (message) => {
         .setTitle('📖 قائمة الأوامر')
         .setColor(0x2b2d31)
         .addFields(
-          { name: '👑 نظام التحكم', value: '`متحكم @شخص` `الغاء_متحكم @شخص` `قائمة_المتحكمين`', inline: false },
-          { name: '📋 المهام', value: '`!لوحة_المهام` (للمدراء العلويين) – مع نقاط KL + نقاط إدارية وإثبات', inline: false },
-          { name: '📅 الإجازات', value: '`!بانل_اجازات` (للمتحكمين)\n`!طلب_اجازة` (للإداريين)\n`!الموافقة_على_الاجازات` (لمسؤول الإجازات)\n**أوامر سلاش:** `/لوحة_الاجازات` `/الاجازات_الحالية` `/سجل_الاجازات`', inline: false },
-          { name: '💰 العملة', value: '`!رصيدي` (يعرض KL + نقاط إدارية)\n`!مصرف` (راتب يومي)\n`!اعطاء_عملات` و `!سحب_عملات` (للمتحكمين)\n`!توب` (ترتيب العملة)\n**مكافآت تلقائية:** 15 KL كل 30 رسالة، 1 KL كل دقيقة في الفويس', inline: false },
-          { name: '🛒 المتجر', value: '`!بانل_اضافة_منتج` (للمتحكمين) – لإضافة منتج\n`!متجر` – شراء رتبة عبر القائمة المنسدلة\nيتطلب رتبة بائع (تُعيّن بـ `!تعيين رتبة_بائع`)', inline: false },
-          { name: '🔐 تسجيل الدخول', value: '`!تسجيل_الدخول` (للمودات)', inline: false },
-          { name: '📊 المستويات', value: '`!مستوى` `!ترتيب`', inline: false },
-          { name: '🎫 التذاكر', value: '`!بانل` `!عرض_تذكرة` `!تعيين تذكرة`\n`!لوق_تذكرة` (داخل التذكرة)', inline: false },
-          { name: '💡 الاقتراحات', value: '`!بانل_اقتراح`', inline: false },
+          { name: '👑 نظام التحكم', value: '`/متحكم @شخص` `/الغاء_متحكم @شخص` `/قائمة_المتحكمين`', inline: false },
+          { name: '📋 المهام', value: '`/لوحة_المهام` (للمدراء العلويين) – مع نقاط KL + نقاط إدارية وإثبات', inline: false },
+          { name: '📅 الإجازات', value: '`/بانل_اجازات` (للمتحكمين)\n`/طلب_اجازة` (للإداريين)\n`/الموافقة_على_الاجازات` (لمسؤول الإجازات)\n**أوامر سلاش:** `/لوحة_الاجازات` `/الاجازات_الحالية` `/سجل_الاجازات`', inline: false },
+          { name: '💰 العملة', value: '`/رصيدي` (يعرض KL + نقاط إدارية)\n`/مصرف` (راتب يومي)\n`/اعطاء_عملات` و `/سحب_عملات` (للمتحكمين)\n`/توب` (ترتيب العملة)\n**مكافآت تلقائية:** 15 KL كل 30 رسالة، 1 KL كل دقيقة في الفويس', inline: false },
+          { name: '🛒 المتجر', value: '`/بانل_اضافة_منتج` (للمتحكمين) – لإضافة منتج\n`/متجر` – شراء رتبة عبر القائمة المنسدلة\nيتطلب رتبة بائع (تُعيّن بـ `/تعيين رتبة_بائع`)', inline: false },
+          { name: '🔐 تسجيل الدخول', value: '`/تسجيل_الدخول` (للمودات)', inline: false },
+          { name: '📊 المستويات', value: '`/مستوى` `/ترتيب`', inline: false },
+          { name: '🎫 التذاكر', value: '`/بانل` `/عرض_تذكرة` `/تعيين تذكرة`\n`/لوق_تذكرة` (داخل التذكرة)', inline: false },
+          { name: '💡 الاقتراحات', value: '`/بانل_اقتراح`', inline: false },
           { name: '🛡️ الإدارة', value: 'حظر، طرد، كتم، تحذير، مسح، قفل، فتح، نقل_كل، طرد_صوتي، كتم_صوتي، فك_كتم_صوتي، إدارة الرتب، القنوات', inline: false },
-          { name: '⚙️ الإعدادات', value: '`!تعيين` (للمالك فقط)', inline: false }
+          { name: '⚙️ الإعدادات', value: '`/تعيين` (للمالك فقط)', inline: false }
         )
-        .setFooter({ text: `🔥 البادئة: !` });
+        .setFooter({ text: `🔥 البادئة: /` });
       if (generalImage) embed.setImage(generalImage);
       await message.channel.send({ embeds: [embed] });
       return;
@@ -2138,7 +2156,7 @@ client.on('messageCreate', async (message) => {
       const from = message.mentions.channels.first();
       const to = message.mentions.channels.last();
       if (!from || !to || from.type !== ChannelType.GuildVoice || to.type !== ChannelType.GuildVoice) {
-        sentReply = await message.reply('⚠️ منشن رومين صوتيين: `!نقل_كل #من #إلى`');
+        sentReply = await message.reply('⚠️ منشن رومين صوتيين: `/نقل_كل #من #إلى`');
         deleteAfter(sentReply);
         return;
       }
@@ -2335,7 +2353,7 @@ client.on('messageCreate', async (message) => {
 
     if (cmd === 'ايمبد') {
       const fullText = args.join(' ');
-      if (!fullText) { sentReply = await message.reply('⚠️ الصيغة: `!ايمبد [العنوان] ، [الوصف]`'); deleteAfter(sentReply); return; }
+      if (!fullText) { sentReply = await message.reply('⚠️ الصيغة: `/ايمبد [العنوان] ، [الوصف]`'); deleteAfter(sentReply); return; }
       const parts = fullText.split(/[،,]\s*/).map(s => s.trim());
       let title = 'بدون عنوان', description = fullText;
       if (parts.length >= 2) { title = parts[0]; description = parts.slice(1).join(' ، '); }
@@ -2462,7 +2480,7 @@ client.on('messageCreate', async (message) => {
       const keyword = args[0];
       const reply = args.slice(1).join(' ');
       if (!keyword || !reply) {
-        await message.reply('⚠️ الصيغة: `!رد_تلقائي [الكلمة] [الرد]`');
+        await message.reply('⚠️ الصيغة: `/رد_تلقائي [الكلمة] [الرد]`');
         return;
       }
       const added = await addAutoReply(guildId, keyword, reply);
@@ -2483,7 +2501,7 @@ client.on('messageCreate', async (message) => {
       const image = args[args.length - 1];
       const reply = args.slice(1, -1).join(' ');
       if (!keyword || !reply || !image) {
-        await message.reply('⚠️ الصيغة: `!رد_تلقائي_صورة [الكلمة] [الرد] [رابط_الصورة]`');
+        await message.reply('⚠️ الصيغة: `/رد_تلقائي_صورة [الكلمة] [الرد] [رابط_الصورة]`');
         return;
       }
       if (!image.match(/^https?:\/\/.+/)) {
@@ -2703,7 +2721,6 @@ client.on('interactionCreate', async (interaction) => {
         request.approvedBy = interaction.user.id;
         await request.save();
         
-        // تسجيل في سجل الإجازات
         await createLeaveLog(guildId, request.userId, 'approved', request._id, `بواسطة ${interaction.user.tag}`);
 
         const user = await getUser(guildId, request.userId);
@@ -2721,7 +2738,6 @@ client.on('interactionCreate', async (interaction) => {
           await member.roles.add(leaveRole);
         }
 
-        // إرسال إلى قناة السجلات
         if (config.leaveLogChannel) {
           const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
           if (logChannel) {
@@ -2743,10 +2759,8 @@ client.on('interactionCreate', async (interaction) => {
         request.status = 'rejected';
         await request.save();
         
-        // تسجيل في سجل الإجازات
         await createLeaveLog(guildId, request.userId, 'rejected', request._id, `بواسطة ${interaction.user.tag}`);
 
-        // إرسال إلى قناة السجلات
         if (config.leaveLogChannel) {
           const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
           if (logChannel) {
@@ -2917,7 +2931,7 @@ client.on('interactionCreate', async (interaction) => {
       user.assignedTasks.push({ taskId: task._id, status: 'pending' });
       await user.save();
       await interaction.reply({ content: `✅ تم إنشاء المهمة وإرسالها إلى ${target}.\nنقاط KL: ${klPoints} | نقاط إدارية: ${adminPoints}`, ephemeral: true });
-      try { await target.send(`📩 تم تكليفك بمهمة جديدة: **${title}**\nنقاط KL: ${klPoints} | نقاط إدارية: ${adminPoints}\nاستخدم \`!لوحة_المهام\` لقبولها.`); } catch (e) {}
+      try { await target.send(`📩 تم تكليفك بمهمة جديدة: **${title}**\nنقاط KL: ${klPoints} | نقاط إدارية: ${adminPoints}\nاستخدم \`/لوحة_المهام\` لقبولها.`); } catch (e) {}
       return;
     }
 
