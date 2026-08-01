@@ -6,7 +6,8 @@ const {
   Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder,
   ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
   PermissionsBitField, ChannelType, ModalBuilder,
-  TextInputBuilder, TextInputStyle, ActivityType, MessageFlags
+  TextInputBuilder, TextInputStyle, ActivityType, MessageFlags,
+  SlashCommandBuilder, REST, Routes
 } = require('discord.js');
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const express = require('express');
@@ -22,6 +23,7 @@ app.listen(port, () => console.log(`🌐 خادم الويب على المنفذ
 const TOKEN = process.env.DISCORD_TOKEN;
 const MONGO_URL = process.env.MONGO_URL;
 const OWNER_ID = process.env.OWNER_ID || '1507841424186675220';
+const CLIENT_ID = process.env.CLIENT_ID || 'YOUR_CLIENT_ID';
 
 if (!TOKEN || !MONGO_URL) {
   console.error('❌ تأكد من وجود DISCORD_TOKEN و MONGO_URL');
@@ -41,6 +43,7 @@ const ConfigSchema = new mongoose.Schema({
   guildId: { type: String, unique: true, required: true },
   logChannel: String,
   ticketLogChannel: String,
+  leaveLogChannel: String, // قناة سجلات الاجازات
   welcomeChannel: String,
   welcomeMessage: { type: String, default: 'أهلاً بك في السيرفر! 🎉' },
   welcomeTitle: { type: String, default: '🔥 مرحباً بك في المجتمع' },
@@ -118,6 +121,17 @@ const LeaveRequestSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 const LeaveRequest = mongoose.model('LeaveRequest', LeaveRequestSchema);
+
+// ====== نموذج سجل الاجازات ======
+const LeaveLogSchema = new mongoose.Schema({
+  guildId: String,
+  userId: String,
+  action: { type: String, enum: ['requested', 'approved', 'rejected', 'ended'] },
+  requestId: { type: mongoose.Schema.Types.ObjectId, ref: 'LeaveRequest' },
+  details: String,
+  timestamp: { type: Date, default: Date.now },
+});
+const LeaveLog = mongoose.model('LeaveLog', LeaveLogSchema);
 
 const StoreItemSchema = new mongoose.Schema({
   guildId: String,
@@ -294,6 +308,16 @@ async function deleteTicketLog(channelId) {
   await TicketLog.deleteOne({ channelId });
 }
 
+// ====== دوال سجل الاجازات ======
+async function createLeaveLog(guildId, userId, action, requestId = null, details = '') {
+  const log = new LeaveLog({ guildId, userId, action, requestId, details });
+  await log.save();
+  return log;
+}
+async function getLeaveLogs(guildId, limit = 50) {
+  return await LeaveLog.find({ guildId }).sort({ timestamp: -1 }).limit(limit).populate('requestId');
+}
+
 async function getAutoLine(guildId, channelId) {
   let auto = await AutoLine.findOne({ guildId, channelId });
   if (!auto) {
@@ -424,11 +448,10 @@ function getGeneralImage(guild, config) {
   return null;
 }
 
-// ====== دالة توليد ملف HTML (مُقوَّاة) ======
+// ====== دالة توليد ملف HTML ======
 async function generateTicketHTML(channel, logData) {
   let messages = [];
   try {
-    // محاولة جلب آخر 500 رسالة فقط لتجنب الضغط
     const fetched = await channel.messages.fetch({ limit: 500 });
     messages = Array.from(fetched.values()).reverse();
   } catch (fetchError) {
@@ -527,12 +550,12 @@ const client = new Client({
 
 const voiceSessions = new Map();
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`✅ البوت جاهز باسم ${client.user.tag}`);
   console.log(`👑 صاحب البوت: ${OWNER_ID}`);
   client.user.setActivity('The Kingdom Never Falls.', { type: ActivityType.Watching });
 
-  // ====== نظام منح 1 KL لكل دقيقة في الفويس (خاص) ======
+  // ====== نظام منح 1 KL لكل دقيقة في الفويس ======
   setInterval(async () => {
     const now = Date.now();
     for (const [key, joinTime] of voiceSessions) {
@@ -563,6 +586,32 @@ client.once('ready', () => {
       }
     }
   }, 60000);
+
+  // ====== تسجيل أوامر سلاش ======
+  if (CLIENT_ID && CLIENT_ID !== 'YOUR_CLIENT_ID') {
+    const commands = [
+      new SlashCommandBuilder()
+        .setName('لوحة_الاجازات')
+        .setDescription('عرض لوحة التحكم بالاجازات'),
+      new SlashCommandBuilder()
+        .setName('الاجازات_الحالية')
+        .setDescription('عرض جميع الاجازات النشطة مع الوقت المتبقي'),
+      new SlashCommandBuilder()
+        .setName('سجل_الاجازات')
+        .setDescription('عرض سجل الاجازات (آخر 20)'),
+    ].map(cmd => cmd.toJSON());
+
+    const rest = new REST({ version: '10' }).setToken(TOKEN);
+    try {
+      console.log('🔄 جاري تسجيل أوامر سلاش...');
+      await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+      console.log('✅ تم تسجيل أوامر سلاش بنجاح');
+    } catch (error) {
+      console.error('❌ فشل تسجيل أوامر سلاش:', error);
+    }
+  } else {
+    console.log('⚠️ CLIENT_ID غير مضبوط. لن تعمل أوامر السلاش.');
+  }
 });
 
 // ============================================================
@@ -843,6 +892,107 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 });
 
 // ============================================================
+// ========== معالج أوامر السلاش ==========
+// ============================================================
+
+client.on('interactionCreate', async (interaction) => {
+  if (interaction.isCommand()) {
+    const { commandName } = interaction;
+    const guildId = interaction.guild.id;
+    const config = await getGuildConfig(guildId);
+
+    // ----- لوحة الاجازات (سلاش) -----
+    if (commandName === 'لوحة_الاجازات') {
+      // التحقق من صلاحية المدير
+      if (!config.leaveManagerRole || !interaction.member.roles.cache.has(config.leaveManagerRole)) {
+        return interaction.reply({ content: '❌ ليس لديك صلاحية الوصول إلى لوحة الاجازات.', ephemeral: true });
+      }
+
+      const pending = await LeaveRequest.find({ guildId, status: 'pending' });
+      const embed = new EmbedBuilder()
+        .setTitle('📅 لوحة إدارة الإجازات')
+        .setDescription('استخدم الأزرار أدناه لإدارة طلبات الإجازات.')
+        .setColor(0x2b2d31)
+        .addFields(
+          { name: '📋 طلبات معلقة', value: pending.length > 0 ? `**${pending.length}** طلب` : 'لا توجد طلبات معلقة', inline: true },
+          { name: '📊 إجازات نشطة', value: `**${await LeaveRequest.countDocuments({ guildId, status: 'approved', endDate: { $gt: new Date() } })}**`, inline: true },
+          { name: '📅 إجازات منتهية', value: `**${await LeaveRequest.countDocuments({ guildId, status: 'approved', endDate: { $lt: new Date() } })}**`, inline: true }
+        )
+        .setTimestamp();
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('leave_panel_pending').setLabel('📋 طلبات معلقة').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('leave_panel_active').setLabel('📊 إجازات نشطة').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('leave_panel_logs').setLabel('📜 سجل الإجازات').setStyle(ButtonStyle.Secondary)
+      );
+
+      await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
+      return;
+    }
+
+    // ----- الاجازات الحالية (سلاش) -----
+    if (commandName === 'الاجازات_الحالية') {
+      const now = new Date();
+      const activeLeaves = await LeaveRequest.find({
+        guildId,
+        status: 'approved',
+        endDate: { $gt: now }
+      }).populate('userId');
+
+      if (activeLeaves.length === 0) {
+        return interaction.reply({ content: '📭 لا توجد إجازات نشطة حالياً.', ephemeral: true });
+      }
+
+      let desc = '';
+      for (const leave of activeLeaves) {
+        const member = await interaction.guild.members.fetch(leave.userId).catch(() => null);
+        const name = member ? member.user.username : 'مستخدم غير معروف';
+        const remaining = Math.ceil((leave.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        const remainingText = remaining > 0 ? `⏳ متبقي **${remaining}** يوم` : '🔴 انتهت اليوم';
+        desc += `**${name}** - ${leave.reason}\n📅 ${remainingText}\n`;
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('📊 الإجازات النشطة')
+        .setDescription(desc || 'لا توجد إجازات نشطة')
+        .setColor(0x2b2d31)
+        .setTimestamp();
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+      return;
+    }
+
+    // ----- سجل الاجازات (سلاش) -----
+    if (commandName === 'سجل_الاجازات') {
+      const logs = await getLeaveLogs(guildId, 20);
+      if (logs.length === 0) {
+        return interaction.reply({ content: '📭 لا توجد سجلات إجازات.', ephemeral: true });
+      }
+
+      let desc = '';
+      for (const log of logs) {
+        const member = await interaction.guild.members.fetch(log.userId).catch(() => null);
+        const name = member ? member.user.username : 'مستخدم غير معروف';
+        const actionMap = {
+          'requested': '📩 طلب',
+          'approved': '✅ موافقة',
+          'rejected': '❌ رفض',
+          'ended': '🔚 انتهاء'
+        };
+        desc += `**${name}** ${actionMap[log.action] || log.action} - ${log.details || ''} (${log.timestamp.toLocaleDateString()})\n`;
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('📜 سجل الإجازات')
+        .setDescription(desc || 'لا توجد سجلات')
+        .setColor(0x2b2d31)
+        .setTimestamp();
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+      return;
+    }
+  }
+});
+
+// ============================================================
 // ========== الأوامر النصية ==========
 // ============================================================
 
@@ -1014,29 +1164,45 @@ client.on('messageCreate', async (message) => {
     }
 
     // ============================================================
-    // == الإجازات ==
+    // == الإجازات (محسنة) ==
     // ============================================================
 
     if (cmd === 'بانل_اجازات' || cmd === 'لوحة_اجازات') {
       if (!(await hasPermission(message.member, guildId))) {
         return message.reply('❌ تحتاج صلاحية متحكم.');
       }
+
+      // التحقق من وجود قناة سجلات
+      if (!config.leaveLogChannel) {
+        await message.reply('⚠️ لم تُعيّن قناة سجلات الإجازات. استخدم `!تعيين قناة_سجلات_اجازات #قناة`');
+      }
+
       const embed = new EmbedBuilder()
-        .setTitle('📅 طلب إجازة')
-        .setDescription('اضغط على الزر أدناه لتقديم طلب إجازة.')
+        .setTitle('📅 لوحة إدارة الإجازات')
+        .setDescription('اضغط على الزر أدناه لتقديم طلب إجازة، أو استخدم الأزرار الأخرى للإدارة.')
         .setColor(0x2b2d31)
         .setTimestamp();
       if (config.leavePanelImage) {
         embed.setImage(config.leavePanelImage);
       }
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('open_leave_modal')
-          .setLabel('📝 طلب إجازة')
-          .setStyle(ButtonStyle.Primary)
+
+      const pending = await LeaveRequest.find({ guildId, status: 'pending' });
+      const active = await LeaveRequest.countDocuments({ guildId, status: 'approved', endDate: { $gt: new Date() } });
+
+      embed.addFields(
+        { name: '📋 طلبات معلقة', value: pending.length > 0 ? `**${pending.length}** طلب` : 'لا توجد طلبات معلقة', inline: true },
+        { name: '📊 إجازات نشطة', value: `**${active}**`, inline: true }
       );
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('open_leave_modal').setLabel('📝 طلب إجازة').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('leave_panel_pending').setLabel('📋 طلبات معلقة').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('leave_panel_active').setLabel('📊 إجازات نشطة').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('leave_panel_logs').setLabel('📜 سجل الإجازات').setStyle(ButtonStyle.Secondary)
+      );
+
       await message.channel.send({ embeds: [embed], components: [row] });
-      await message.reply('✅ تم إنشاء بانل طلب الإجازات.');
+      await message.reply('✅ تم إنشاء لوحة الإجازات.');
       return;
     }
 
@@ -1065,13 +1231,21 @@ client.on('messageCreate', async (message) => {
       }
       const pending = await LeaveRequest.find({ guildId, status: 'pending' });
       if (!pending.length) return message.reply('📭 لا توجد طلبات إجازة معلقة.');
+      
       let desc = '';
       for (const req of pending) {
         const member = await message.guild.members.fetch(req.userId).catch(() => null);
         const name = member ? member.user.username : 'مستخدم غير معروف';
         desc += `**${name}** - ${req.reason} (${req.duration} يوم)\n`;
       }
-      const embed = new EmbedBuilder().setTitle('📋 طلبات الإجازات المعلقة').setDescription(desc).setColor(0x2b2d31);
+      const embed = new EmbedBuilder()
+        .setTitle('📋 طلبات الإجازات المعلقة')
+        .setDescription(desc)
+        .setColor(0x2b2d31)
+        .setFooter({ text: `عدد الطلبات: ${pending.length}` })
+        .setTimestamp();
+      
+      // أزرار للتنقل بين الطلبات (سيتم عرضها في معالج التفاعلات)
       await message.channel.send({ embeds: [embed] });
       return;
     }
@@ -1160,7 +1334,7 @@ client.on('messageCreate', async (message) => {
     }
 
     // ============================================================
-    // == أمر لوق التذكرة (معدل) ==
+    // == أمر لوق التذكرة ==
     // ============================================================
 
     if (cmd === 'لوق_تذكرة' || cmd === 'لوق' || cmd === 'تقرير') {
@@ -1202,7 +1376,6 @@ client.on('messageCreate', async (message) => {
         )
         .setTimestamp();
 
-      // إرسال الإمبيد والملف (إن وُجد) علناً في الروم
       const replyData = {
         content: `📋 تقرير التذكرة **${message.channel.name}**${generationFailed ? ' ⚠️ (فشل توليد الملف، لكن التقرير النصي معروض)' : ''}`,
         embeds: [embed]
@@ -1212,7 +1385,6 @@ client.on('messageCreate', async (message) => {
       }
       await message.channel.send(replyData);
 
-      // إرسال إلى قناة السجلات
       const logChannelId = config.ticketLogChannel;
       if (logChannelId) {
         const logChannel = message.guild.channels.cache.get(logChannelId);
@@ -1226,7 +1398,6 @@ client.on('messageCreate', async (message) => {
         }
       }
 
-      // إرسال إلى خاص منشئ التذكرة
       if (creator) {
         try {
           const dmEmbed = new EmbedBuilder()
@@ -1262,6 +1433,7 @@ client.on('messageCreate', async (message) => {
             { name: '👋 الترحيب', value: '`ترحيب #قناة`، `رسالة_ترحيب نص`، `صورة_ترحيب رابط`، `عنوان_ترحيب نص`، `خلفية_ترحيب [لون/رابط]`', inline: false },
             { name: '📋 اللوق', value: '`سجلات #قناة`' },
             { name: '📋 سجلات التذاكر (HTML)', value: '`قناة_سجلات_تذاكر #قناة`' },
+            { name: '📋 سجلات الإجازات', value: '`قناة_سجلات_اجازات #قناة`' },
             { name: '📊 المستويات', value: '`روم_ليفل #قناة`' },
             { name: '🤖 الأوتو لاين', value: '`اوتر_لاين #روم [نص]`، `صورة_اوترلاين #روم رابط`، `تفعيل_اوترلاين #روم`، `تعطيل_اوترلاين #روم`، `حذف_اوترلاين #روم`' },
             { name: '🎫 التذاكر', value: '`تذكرة` (لإدارة الأقسام)' },
@@ -1282,6 +1454,21 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
+      // ---- قناة سجلات الإجازات ----
+      if (sub === 'قناة_سجلات_اجازات' || sub === 'سجلات_اجازات') {
+        const channel = message.mentions.channels.first();
+        if (!channel) {
+          await updateGuildConfig(guildId, { leaveLogChannel: null });
+          await message.reply('✅ تم إلغاء تعيين قناة سجلات الإجازات.');
+          return;
+        }
+        await updateGuildConfig(guildId, { leaveLogChannel: channel.id });
+        await logToChannel(guildId, { title: '⚙️ إعدادات', color: 0x2b2d31, description: `**${message.author}** عيّن قناة سجلات الإجازات إلى ${channel}` });
+        await message.reply(`✅ تم تعيين قناة سجلات الإجازات إلى ${channel}`);
+        return;
+      }
+
+      // ---- قناة سجلات التذاكر ----
       if (sub === 'قناة_سجلات_تذاكر' || sub === 'سجلات_تذاكر') {
         const channel = message.mentions.channels.first();
         if (!channel) {
@@ -1295,6 +1482,7 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
+      // ---- باقي الإعدادات (نفس الكود السابق) ----
       if (sub === 'صورة_المتجر') {
         if (!value) {
           await updateGuildConfig(guildId, { storePanelImage: null });
@@ -1711,6 +1899,13 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
+      if (sub === 'صورة_بانل_اجازات') {
+        if (!value) { await message.reply('⚠️ أدخل رابط الصورة.'); return; }
+        await updateGuildConfig(guildId, { leavePanelImage: value });
+        await message.reply(`✅ تم تعيين صورة بانل الإجازات: ${value}`);
+        return;
+      }
+
       await message.reply('⚠️ خيار غير معروف. استخدم `!تعيين` لعرض القائمة.');
       return;
     }
@@ -1726,7 +1921,7 @@ client.on('messageCreate', async (message) => {
         .addFields(
           { name: '👑 نظام التحكم', value: '`متحكم @شخص` `الغاء_متحكم @شخص` `قائمة_المتحكمين`', inline: false },
           { name: '📋 المهام', value: '`!لوحة_المهام` (للمدراء العلويين) – مع نقاط KL + نقاط إدارية وإثبات', inline: false },
-          { name: '📅 الإجازات', value: '`!بانل_اجازات` (للمتحكمين)\n`!طلب_اجازة` (للإداريين)\n`!الموافقة_على_الاجازات` (لمسؤول الإجازات)', inline: false },
+          { name: '📅 الإجازات', value: '`!بانل_اجازات` (للمتحكمين)\n`!طلب_اجازة` (للإداريين)\n`!الموافقة_على_الاجازات` (لمسؤول الإجازات)\n**أوامر سلاش:** `/لوحة_الاجازات` `/الاجازات_الحالية` `/سجل_الاجازات`', inline: false },
           { name: '💰 العملة', value: '`!رصيدي` (يعرض KL + نقاط إدارية)\n`!مصرف` (راتب يومي)\n`!اعطاء_عملات` و `!سحب_عملات` (للمتحكمين)\n`!توب` (ترتيب العملة)\n**مكافآت تلقائية:** 15 KL كل 30 رسالة، 1 KL كل دقيقة في الفويس', inline: false },
           { name: '🛒 المتجر', value: '`!بانل_اضافة_منتج` (للمتحكمين) – لإضافة منتج\n`!متجر` – شراء رتبة عبر القائمة المنسدلة\nيتطلب رتبة بائع (تُعيّن بـ `!تعيين رتبة_بائع`)', inline: false },
           { name: '🔐 تسجيل الدخول', value: '`!تسجيل_الدخول` (للمودات)', inline: false },
@@ -2409,7 +2604,7 @@ client.on('messageCreate', async (message) => {
 });
 
 // ============================================================
-// ========== معالج التفاعلات ==========
+// ========== معالج التفاعلات (الأزرار، القوائم، المودالات) ==========
 // ============================================================
 
 client.on('interactionCreate', async (interaction) => {
@@ -2418,7 +2613,7 @@ client.on('interactionCreate', async (interaction) => {
 
   try {
 
-    // ----- طلب إجازة -----
+    // ----- طلب إجازة (زر) -----
     if (interaction.isButton() && interaction.customId === 'open_leave_modal') {
       const hasPerm = await isJuniorAdmin(interaction.member, guildId);
       if (!hasPerm) return interaction.reply({ content: '❌ هذا الزر مخصص للإداريين فقط.', ephemeral: true });
@@ -2437,6 +2632,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // ----- مودال طلب الإجازة -----
     if (interaction.isModalSubmit() && interaction.customId === 'leave_modal') {
       const reason = interaction.fields.getTextInputValue('leave_reason');
       const duration = parseInt(interaction.fields.getTextInputValue('leave_duration'));
@@ -2452,7 +2648,13 @@ client.on('interactionCreate', async (interaction) => {
         endDate: new Date(Date.now() + duration * 24 * 60 * 60 * 1000),
       });
       await request.save();
+
+      // تسجيل في سجل الإجازات
+      await createLeaveLog(guildId, interaction.user.id, 'requested', request._id, `${reason} (${duration} يوم)`);
+
       const config = await getGuildConfig(guildId);
+      
+      // إرسال إلى قناة الطلبات
       const channel = config.leaveRequestChannel ? interaction.guild.channels.cache.get(config.leaveRequestChannel) : null;
       if (channel) {
         const embed = new EmbedBuilder()
@@ -2466,10 +2668,25 @@ client.on('interactionCreate', async (interaction) => {
         );
         await channel.send({ content: `<@&${config.leaveManagerRole}>`, embeds: [embed], components: [row] });
       }
+
+      // إرسال إلى قناة سجلات الإجازات
+      if (config.leaveLogChannel) {
+        const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
+        if (logChannel) {
+          const logEmbed = new EmbedBuilder()
+            .setTitle('📋 طلب إجازة جديد')
+            .setDescription(`**${interaction.user}** طلب إجازة لمدة ${duration} يوم.\nالسبب: ${reason}`)
+            .setColor(0x2b2d31)
+            .setTimestamp();
+          await logChannel.send({ embeds: [logEmbed] });
+        }
+      }
+
       await interaction.reply({ content: '✅ تم إرسال طلب إجازتك بنجاح.', ephemeral: true });
       return;
     }
 
+    // ----- أزرار الموافقة على الإجازات -----
     if (interaction.isButton() && interaction.customId.startsWith('leave_')) {
       const parts = interaction.customId.split('_');
       const action = parts[1];
@@ -2480,10 +2697,15 @@ client.on('interactionCreate', async (interaction) => {
       if (!config.leaveManagerRole || !interaction.member.roles.cache.has(config.leaveManagerRole))
         return interaction.reply({ content: '❌ ليس لديك صلاحية.', ephemeral: true });
       if (request.status !== 'pending') return interaction.reply({ content: '⚠️ تمت معالجة هذا الطلب مسبقاً.', ephemeral: true });
+
       if (action === 'approve') {
         request.status = 'approved';
         request.approvedBy = interaction.user.id;
         await request.save();
+        
+        // تسجيل في سجل الإجازات
+        await createLeaveLog(guildId, request.userId, 'approved', request._id, `بواسطة ${interaction.user.tag}`);
+
         const user = await getUser(guildId, request.userId);
         const member = await interaction.guild.members.fetch(request.userId).catch(() => null);
         if (member) {
@@ -2498,6 +2720,20 @@ client.on('interactionCreate', async (interaction) => {
           if (!leaveRole) leaveRole = await interaction.guild.roles.create({ name: 'إجازة', color: '#808080' });
           await member.roles.add(leaveRole);
         }
+
+        // إرسال إلى قناة السجلات
+        if (config.leaveLogChannel) {
+          const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
+          if (logChannel) {
+            const logEmbed = new EmbedBuilder()
+              .setTitle('✅ تمت الموافقة على إجازة')
+              .setDescription(`**<@${request.userId}>** تمت الموافقة على إجازته لمدة ${request.duration} يوم.\nالموافق: ${interaction.user}`)
+              .setColor(0x2b2d31)
+              .setTimestamp();
+            await logChannel.send({ embeds: [logEmbed] });
+          }
+        }
+
         await interaction.reply({ content: `✅ تمت الموافقة على إجازة <@${request.userId}>.`, ephemeral: false });
         try {
           const userMember = await interaction.guild.members.fetch(request.userId);
@@ -2506,6 +2742,23 @@ client.on('interactionCreate', async (interaction) => {
       } else if (action === 'reject') {
         request.status = 'rejected';
         await request.save();
+        
+        // تسجيل في سجل الإجازات
+        await createLeaveLog(guildId, request.userId, 'rejected', request._id, `بواسطة ${interaction.user.tag}`);
+
+        // إرسال إلى قناة السجلات
+        if (config.leaveLogChannel) {
+          const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
+          if (logChannel) {
+            const logEmbed = new EmbedBuilder()
+              .setTitle('❌ تم رفض إجازة')
+              .setDescription(`**<@${request.userId}>** تم رفض إجازته.\nالرافض: ${interaction.user}`)
+              .setColor(0x2b2d31)
+              .setTimestamp();
+            await logChannel.send({ embeds: [logEmbed] });
+          }
+        }
+
         await interaction.reply({ content: `❌ تم رفض إجازة <@${request.userId}>.`, ephemeral: false });
         try {
           const userMember = await interaction.guild.members.fetch(request.userId);
@@ -2515,7 +2768,74 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- المهام -----
+    // ----- أزرار لوحة الإجازات -----
+    if (interaction.isButton() && interaction.customId.startsWith('leave_panel_')) {
+      const action = interaction.customId.replace('leave_panel_', '');
+      const config = await getGuildConfig(guildId);
+
+      if (action === 'pending') {
+        const pending = await LeaveRequest.find({ guildId, status: 'pending' });
+        if (!pending.length) return interaction.reply({ content: '📭 لا توجد طلبات معلقة.', ephemeral: true });
+        let desc = '';
+        for (const req of pending) {
+          const member = await interaction.guild.members.fetch(req.userId).catch(() => null);
+          const name = member ? member.user.username : 'مستخدم غير معروف';
+          desc += `**${name}** - ${req.reason} (${req.duration} يوم)\n`;
+        }
+        const embed = new EmbedBuilder()
+          .setTitle('📋 طلبات الإجازات المعلقة')
+          .setDescription(desc)
+          .setColor(0x2b2d31)
+          .setFooter({ text: `عدد الطلبات: ${pending.length}` })
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+      } else if (action === 'active') {
+        const now = new Date();
+        const active = await LeaveRequest.find({
+          guildId,
+          status: 'approved',
+          endDate: { $gt: now }
+        });
+        if (!active.length) return interaction.reply({ content: '📭 لا توجد إجازات نشطة.', ephemeral: true });
+        let desc = '';
+        for (const leave of active) {
+          const member = await interaction.guild.members.fetch(leave.userId).catch(() => null);
+          const name = member ? member.user.username : 'مستخدم غير معروف';
+          const remaining = Math.ceil((leave.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+          desc += `**${name}** - ${leave.reason}\n⏳ متبقي **${remaining}** يوم\n`;
+        }
+        const embed = new EmbedBuilder()
+          .setTitle('📊 الإجازات النشطة')
+          .setDescription(desc)
+          .setColor(0x2b2d31)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+      } else if (action === 'logs') {
+        const logs = await getLeaveLogs(guildId, 20);
+        if (!logs.length) return interaction.reply({ content: '📭 لا توجد سجلات.', ephemeral: true });
+        let desc = '';
+        for (const log of logs) {
+          const member = await interaction.guild.members.fetch(log.userId).catch(() => null);
+          const name = member ? member.user.username : 'مستخدم غير معروف';
+          const actionMap = {
+            'requested': '📩 طلب',
+            'approved': '✅ موافقة',
+            'rejected': '❌ رفض',
+            'ended': '🔚 انتهاء'
+          };
+          desc += `**${name}** ${actionMap[log.action] || log.action} - ${log.details || ''}\n`;
+        }
+        const embed = new EmbedBuilder()
+          .setTitle('📜 سجل الإجازات')
+          .setDescription(desc)
+          .setColor(0x2b2d31)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+      return;
+    }
+
+    // ----- أزرار المهام (إنشاء، عرض، إنهاء) -----
     if (interaction.isButton() && interaction.customId.startsWith('task_')) {
       const action = interaction.customId.split('_')[1];
       if (action === 'create') {
@@ -2574,6 +2894,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
+    // ----- مودال إنشاء مهمة -----
     if (interaction.isModalSubmit() && interaction.customId === 'task_create_modal') {
       const title = interaction.fields.getTextInputValue('task_title');
       const desc = interaction.fields.getTextInputValue('task_desc');
@@ -2600,6 +2921,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // ----- اختيار مهمة لإنهائها (يعرض مودال إثبات) -----
     if (interaction.isStringSelectMenu() && interaction.customId === 'task_complete_select') {
       const taskId = interaction.values[0];
       const task = await Task.findById(taskId);
@@ -2631,6 +2953,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // ----- تقديم الإثبات وإنهاء المهمة -----
     if (interaction.isModalSubmit() && interaction.customId.startsWith('task_proof_')) {
       const taskId = interaction.customId.split('_')[2];
       const task = await Task.findById(taskId);
@@ -2852,10 +3175,9 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // ============================================================
-    // == معالجات التذاكر المتطورة (استلام - إضافة عضو - إغلاق) ==
+    // == معالجات التذاكر المتطورة ==
     // ============================================================
 
-    // ----- فتح تذكرة من القائمة المنسدلة -----
     if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_menu') {
       const sectionName = interaction.values[0];
       const settings = await getTicketSettings(guildId);
@@ -2889,18 +3211,9 @@ client.on('interactionCreate', async (interaction) => {
       await createTicketLog(guildId, channel.id, interaction.user.id, sectionName);
       
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId('claim_ticket')
-          .setLabel('📥 استلام التذكرة')
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId('add_member_ticket')
-          .setLabel('➕ إضافة عضو')
-          .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-          .setCustomId('close_ticket')
-          .setLabel('🔒 إغلاق')
-          .setStyle(ButtonStyle.Danger)
+        new ButtonBuilder().setCustomId('claim_ticket').setLabel('📥 استلام التذكرة').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('add_member_ticket').setLabel('➕ إضافة عضو').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('close_ticket').setLabel('🔒 إغلاق').setStyle(ButtonStyle.Danger)
       );
       
       const embed = new EmbedBuilder()
@@ -2922,7 +3235,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- استلام التذكرة -----
     if (interaction.isButton() && interaction.customId === 'claim_ticket') {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
@@ -2943,7 +3255,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- إضافة عضو -----
     if (interaction.isButton() && interaction.customId === 'add_member_ticket') {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
@@ -2996,7 +3307,6 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- إغلاق التذكرة مع إرسال HTML (معدل) -----
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
