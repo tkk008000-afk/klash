@@ -43,7 +43,7 @@ const ConfigSchema = new mongoose.Schema({
   guildId: { type: String, unique: true, required: true },
   logChannel: String,
   ticketLogChannel: String,
-  leaveLogChannel: String, // قناة سجلات الاجازات
+  leaveLogChannel: String,
   welcomeChannel: String,
   welcomeMessage: { type: String, default: 'أهلاً بك في السيرفر! 🎉' },
   welcomeTitle: { type: String, default: '🔥 مرحباً بك في المجتمع' },
@@ -68,6 +68,7 @@ const ConfigSchema = new mongoose.Schema({
   seniorAdminRole: String,
   juniorAdminRole: String,
   sellerRole: String,
+  botControllerRole: String, // 🔹 رتبة التحكم بالبوت
   pointsPerTask: { type: Number, default: 10 },
   dailySalary: { type: Number, default: 5 },
   promotionPoints: { type: Number, default: 100 },
@@ -122,7 +123,6 @@ const LeaveRequestSchema = new mongoose.Schema({
 });
 const LeaveRequest = mongoose.model('LeaveRequest', LeaveRequestSchema);
 
-// ====== نموذج سجل الاجازات ======
 const LeaveLogSchema = new mongoose.Schema({
   guildId: String,
   userId: String,
@@ -175,9 +175,11 @@ const TicketSettingsSchema = new mongoose.Schema({
     name: String,
     roleId: String,
     emoji: { type: String, default: '📌' },
+    canRestart: { type: Boolean, default: false }, // 🔹 إعادة تعيين القسم
   }],
   text: { type: String, default: 'مرحباً بكم في قسم التذاكر...' },
   image: { type: String, default: 'https://i.imgur.com/GkKqN3G.png' },
+  ticketCounter: { type: Number, default: 0 }, // 🔹 عداد التذاكر
 });
 const TicketSettings = mongoose.model('TicketSettings', TicketSettingsSchema);
 
@@ -266,7 +268,11 @@ async function isController(userId, guildId) {
 async function hasPermission(member, guildId) {
   if (!member) return false;
   if (OWNER_ID && member.id === OWNER_ID) return true;
-  return await isController(member.id, guildId);
+  if (await isController(member.id, guildId)) return true;
+  const config = await getGuildConfig(guildId);
+  // 🔹 التحقق من رتبة التحكم بالبوت
+  if (config.botControllerRole && member.roles.cache.has(config.botControllerRole)) return true;
+  return false;
 }
 async function isSeniorAdmin(member, guildId) {
   if (member.id === OWNER_ID) return true;
@@ -308,7 +314,6 @@ async function deleteTicketLog(channelId) {
   await TicketLog.deleteOne({ channelId });
 }
 
-// ====== دوال سجل الاجازات ======
 async function createLeaveLog(guildId, userId, action, requestId = null, details = '') {
   const log = new LeaveLog({ guildId, userId, action, requestId, details });
   await log.save();
@@ -590,15 +595,47 @@ client.once('ready', async () => {
   // ====== تسجيل أوامر سلاش ======
   if (CLIENT_ID && CLIENT_ID !== 'YOUR_CLIENT_ID') {
     const commands = [
-      new SlashCommandBuilder()
-        .setName('لوحة_الاجازات')
-        .setDescription('عرض لوحة التحكم بالاجازات'),
-      new SlashCommandBuilder()
-        .setName('الاجازات_الحالية')
-        .setDescription('عرض جميع الاجازات النشطة مع الوقت المتبقي'),
-      new SlashCommandBuilder()
-        .setName('سجل_الاجازات')
-        .setDescription('عرض سجل الاجازات (آخر 20)'),
+      // أوامر عامة
+      new SlashCommandBuilder().setName('مساعدة').setDescription('عرض قائمة الأوامر'),
+      new SlashCommandBuilder().setName('رصيدي').setDescription('عرض رصيدك من KL والنقاط الإدارية'),
+      new SlashCommandBuilder().setName('توب').setDescription('عرض أغنى 10 أشخاص في السيرفر'),
+      new SlashCommandBuilder().setName('مصرف').setDescription('الحصول على الراتب اليومي'),
+      new SlashCommandBuilder().setName('مستوى').setDescription('عرض مستوى عضو').addUserOption(opt => opt.setName('عضو').setDescription('اختر عضواً (اختياري)').setRequired(false)),
+      new SlashCommandBuilder().setName('ترتيب').setDescription('عرض ترتيب المستويات'),
+      new SlashCommandBuilder().setName('معلومات').setDescription('عرض معلومات عن عضو').addUserOption(opt => opt.setName('عضو').setDescription('اختر عضواً (اختياري)').setRequired(false)),
+      new SlashCommandBuilder().setName('سيرفر').setDescription('عرض معلومات عن السيرفر'),
+      new SlashCommandBuilder().setName('بينق').setDescription('عرض سرعة الاستجابة'),
+      new SlashCommandBuilder().setName('قائمة_المتحكمين').setDescription('عرض قائمة المتحكمين'),
+      new SlashCommandBuilder().setName('تغيير_اسم').setDescription('تغيير اسمك المستعار في السيرفر'),
+      
+      // أوامر التذاكر
+      new SlashCommandBuilder().setName('بانل').setDescription('إنشاء لوحة التذاكر'),
+      new SlashCommandBuilder().setName('عرض_تذكرة').setDescription('عرض إعدادات التذاكر'),
+      new SlashCommandBuilder().setName('لوق_تذكرة').setDescription('إنشاء تقرير HTML للتذكرة الحالية'),
+      
+      // أوامر المتجر
+      new SlashCommandBuilder().setName('متجر').setDescription('فتح المتجر لشراء الرتب'),
+      new SlashCommandBuilder().setName('بانل_اضافة_منتج').setDescription('إنشاء لوحة إضافة منتج (للمتحكمين)'),
+      
+      // أوامر الردود التلقائية
+      new SlashCommandBuilder().setName('رد_تلقائي').setDescription('إضافة رد تلقائي').addStringOption(opt => opt.setName('الكلمة').setDescription('الكلمة المفتاحية').setRequired(true)).addStringOption(opt => opt.setName('الرد').setDescription('نص الرد').setRequired(true)),
+      new SlashCommandBuilder().setName('عرض_الردود').setDescription('عرض جميع الردود التلقائية'),
+      new SlashCommandBuilder().setName('حذف_رد_تلقائي').setDescription('حذف رد تلقائي').addStringOption(opt => opt.setName('الكلمة').setDescription('الكلمة المفتاحية').setRequired(true)),
+      
+      // أوامر الإدارة
+      new SlashCommandBuilder().setName('لوحة_المهام').setDescription('فتح لوحة المهام الإدارية'),
+      new SlashCommandBuilder().setName('بانل_اجازات').setDescription('فتح لوحة الإجازات'),
+      new SlashCommandBuilder().setName('طلب_اجازة').setDescription('تقديم طلب إجازة'),
+      new SlashCommandBuilder().setName('الموافقة_على_الاجازات').setDescription('عرض طلبات الإجازات المعلقة'),
+      new SlashCommandBuilder().setName('الاجازات_الحالية').setDescription('عرض الإجازات النشطة'),
+      new SlashCommandBuilder().setName('سجل_الاجازات').setDescription('عرض سجل الإجازات'),
+      
+      // أوامر أخرى
+      new SlashCommandBuilder().setName('بانل_اقتراح').setDescription('إنشاء لوحة الاقتراحات'),
+      new SlashCommandBuilder().setName('رتب').setDescription('إنشاء لوحة رتب الإشعارات'),
+      
+      // أمر الإعدادات (للمالك فقط)
+      new SlashCommandBuilder().setName('تعيين').setDescription('إعدادات البوت (للمالك فقط)').addStringOption(opt => opt.setName('الخيار').setDescription('الخيار المطلوب').setRequired(true)).addStringOption(opt => opt.setName('القيمة').setDescription('القيمة الجديدة').setRequired(false)),
     ].map(cmd => cmd.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -903,7 +940,6 @@ client.on('interactionCreate', async (interaction) => {
 
     // ----- لوحة الاجازات (سلاش) -----
     if (commandName === 'لوحة_الاجازات') {
-      // التحقق من صلاحية المدير
       if (!config.leaveManagerRole || !interaction.member.roles.cache.has(config.leaveManagerRole)) {
         return interaction.reply({ content: '❌ ليس لديك صلاحية الوصول إلى لوحة الاجازات.', ephemeral: true });
       }
@@ -989,7 +1025,12 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ embeds: [embed], ephemeral: true });
       return;
     }
+
+    // ----- باقي الأوامر السلاش (سيتم معالجتها في مكان آخر) -----
+    // سيتم التعامل مع الأوامر الأخرى في الأقسام المخصصة لها
   }
+
+  // باقي المعالجات (أزرار، قوائم، مودالات) تبقى كما هي.
 });
 
 // ============================================================
@@ -1172,7 +1213,6 @@ client.on('messageCreate', async (message) => {
         return message.reply('❌ تحتاج صلاحية متحكم.');
       }
 
-      // التحقق من وجود قناة سجلات
       if (!config.leaveLogChannel) {
         await message.reply('⚠️ لم تُعيّن قناة سجلات الإجازات. استخدم `!تعيين قناة_سجلات_اجازات #قناة`');
       }
@@ -1245,7 +1285,6 @@ client.on('messageCreate', async (message) => {
         .setFooter({ text: `عدد الطلبات: ${pending.length}` })
         .setTimestamp();
       
-      // أزرار للتنقل بين الطلبات (سيتم عرضها في معالج التفاعلات)
       await message.channel.send({ embeds: [embed] });
       return;
     }
@@ -1441,7 +1480,7 @@ client.on('messageCreate', async (message) => {
             { name: '🖼️ عام', value: '`صورة_بنر رابط`، `صورة_عامة رابط`' },
             { name: '🚪 دور الدخول', value: '`دور_دخول @دور`' },
             { name: '💡 الاقتراحات', value: '`قناة_اقتراح #قناة`، `عنوان_اقتراح نص`، `وصف_اقتراح نص`، `لون_اقتراح #هيكس`، `صورة_اقتراح رابط`' },
-            { name: '👑 الإدارة', value: '`رتبة_اداري_علوي @رتبة`، `رتبة_اداري_صغري @رتبة`، `رتبة_مسؤول_اجازات @رتبة`' },
+            { name: '👑 الإدارة', value: '`رتبة_اداري_علوي @رتبة`، `رتبة_اداري_صغري @رتبة`، `رتبة_مسؤول_اجازات @رتبة`، `رتبة_تحكم_البوت @رتبة`' },
             { name: '💰 المالية', value: '`نقاط_المهمة [عدد]`، `راتب_يومي [عدد]`، `نقاط_الترقية [عدد]`' },
             { name: '🛒 المتجر', value: '`اضافة_منتج @رتبة السعر [الوصف]`، `حذف_منتج [معرف]`، `صورة_المتجر [رابط]`، `قناة_المتجر #قناة`' },
             { name: '📌 القنوات', value: '`قناة_المهام #قناة`، `قناة_الاجازات #قناة`، `قناة_المودات #قناة`' },
@@ -1516,6 +1555,15 @@ client.on('messageCreate', async (message) => {
         if (!role) { await message.reply('⚠️ منشن الرتبة.'); return; }
         await updateGuildConfig(guildId, { sellerRole: role.id });
         await message.reply(`✅ تم تعيين رتبة البائع: ${role}`);
+        return;
+      }
+
+      // 🔹 رتبة التحكم بالبوت
+      if (sub === 'رتبة_تحكم_البوت') {
+        const role = message.mentions.roles.first();
+        if (!role) { await message.reply('⚠️ منشن الرتبة.'); return; }
+        await updateGuildConfig(guildId, { botControllerRole: role.id });
+        await message.reply(`✅ تم تعيين رتبة التحكم بالبوت: ${role}`);
         return;
       }
 
@@ -1722,6 +1770,10 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
+      // ============================================================
+      // == إدارة التذاكر (مع خيار إعادة التعيين) ==
+      // ============================================================
+
       if (sub === 'تذكرة') {
         const settings = await getTicketSettings(guildId);
         const action = args[1]?.toLowerCase();
@@ -1732,30 +1784,34 @@ client.on('messageCreate', async (message) => {
             .setTitle('⚙️ إدارة التذاكر')
             .setColor(0x2b2d31)
             .addFields(
-              { name: '➕ إضافة قسم', value: '`!تعيين تذكرة إضافة [الاسم] @دور :ايموجي:`\nمثال: `!تعيين تذكرة إضافة دعم فني @SupportRole 🛠️`' },
+              { name: '➕ إضافة قسم', value: '`!تعيين تذكرة إضافة [الاسم] @دور :ايموجي: [قابل_لإعادة]`\nمثال: `!تعيين تذكرة إضافة دعم فني @SupportRole 🛠️ قابل_لإعادة`' },
               { name: '🎨 تعيين إيموجي لقسم', value: '`!تعيين تذكرة تعيين_ايموجي [الاسم] :ايموجي:`' },
               { name: '➖ حذف قسم', value: '`!تعيين تذكرة حذف [الاسم]`' },
               { name: '📝 تغيير النص', value: '`!تعيين تذكرة نص [النص]`' },
               { name: '🖼️ تغيير الصورة', value: '`!تعيين تذكرة صورة [رابط]`' },
-              { name: '👀 عرض الأقسام', value: '`!عرض_تذكرة`' }
+              { name: '👀 عرض الأقسام', value: '`!عرض_تذكرة`' },
+              { name: '🔄 إعادة التعيين', value: 'عند إضافة قسم مع `قابل_لإعادة`، سيظهر زر لإعادة فتح التذكرة بعد الإغلاق.' }
             )
-            .setFooter({ text: 'الأقسام الحالية: ' + settings.sections.map(s => `${s.emoji || '📌'} ${s.name}`).join(', ') });
+            .setFooter({ text: 'الأقسام الحالية: ' + settings.sections.map(s => `${s.emoji || '📌'} ${s.name}${s.canRestart ? ' (🔄)' : ''}`).join(', ') });
           if (generalImage) embed.setImage(generalImage);
           await message.channel.send({ embeds: [embed] });
           return;
         }
 
         if (action === 'إضافة') {
-          const parts = actionValue.match(/^(.+?)\s+<@&(\d+)>\s*(\S+)?$/);
-          if (!parts) { await message.reply('⚠️ الصيغة: `!تعيين تذكرة إضافة [الاسم] @دور :ايموجي:`'); return; }
+          // 🔹 دعم خيار إعادة التعيين
+          const regex = /^(.+?)\s+<@&(\d+)>\s*(\S+)?\s*(قابل_لإعادة)?$/;
+          const parts = actionValue.match(regex);
+          if (!parts) { await message.reply('⚠️ الصيغة: `!تعيين تذكرة إضافة [الاسم] @دور :ايموجي: [قابل_لإعادة]`'); return; }
           const sectionName = parts[1].trim();
           const roleId = parts[2];
           const emoji = parts[3] || '📌';
+          const canRestart = parts[4] === 'قابل_لإعادة';
           if (settings.sections.find(s => s.name === sectionName)) { await message.reply(`⚠️ قسم "${sectionName}" موجود بالفعل.`); return; }
-          settings.sections.push({ name: sectionName, roleId, emoji });
+          settings.sections.push({ name: sectionName, roleId, emoji, canRestart });
           await saveTicketSettings(guildId, settings);
-          await logToChannel(guildId, { title: '🎫 إضافة قسم تذكرة', color: 0x2b2d31, description: `**${message.author}** أضاف قسم **${sectionName}** مع دور <@&${roleId}> وإيموجي ${emoji}` });
-          await message.reply(`✅ تم إضافة قسم **${sectionName}** مع دور <@&${roleId}> وإيموجي ${emoji}.`);
+          await logToChannel(guildId, { title: '🎫 إضافة قسم تذكرة', color: 0x2b2d31, description: `**${message.author}** أضاف قسم **${sectionName}** مع دور <@&${roleId}> وإيموجي ${emoji}${canRestart ? ' (قابل لإعادة الفتح)' : ''}` });
+          await message.reply(`✅ تم إضافة قسم **${sectionName}** مع دور <@&${roleId}> وإيموجي ${emoji}${canRestart ? ' (قابل لإعادة الفتح)' : ''}.`);
           return;
         }
 
@@ -1921,7 +1977,7 @@ client.on('messageCreate', async (message) => {
         .addFields(
           { name: '👑 نظام التحكم', value: '`متحكم @شخص` `الغاء_متحكم @شخص` `قائمة_المتحكمين`', inline: false },
           { name: '📋 المهام', value: '`!لوحة_المهام` (للمدراء العلويين) – مع نقاط KL + نقاط إدارية وإثبات', inline: false },
-          { name: '📅 الإجازات', value: '`!بانل_اجازات` (للمتحكمين)\n`!طلب_اجازة` (للإداريين)\n`!الموافقة_على_الاجازات` (لمسؤول الإجازات)\n**أوامر سلاش:** `/لوحة_الاجازات` `/الاجازات_الحالية` `/سجل_الاجازات`', inline: false },
+          { name: '📅 الإجازات', value: '`!بانل_اجازات` (للمتحكمين)\n`!طلب_اجازة` (للإداريين)\n`!الموافقة_على_الاجازات` (لمسؤول الإجازات)\n**أوامر سلاش:** `/لوحة_اجازات` `/الاجازات_الحالية` `/سجل_الاجازات`', inline: false },
           { name: '💰 العملة', value: '`!رصيدي` (يعرض KL + نقاط إدارية)\n`!مصرف` (راتب يومي)\n`!اعطاء_عملات` و `!سحب_عملات` (للمتحكمين)\n`!توب` (ترتيب العملة)\n**مكافآت تلقائية:** 15 KL كل 30 رسالة، 1 KL كل دقيقة في الفويس', inline: false },
           { name: '🛒 المتجر', value: '`!بانل_اضافة_منتج` (للمتحكمين) – لإضافة منتج\n`!متجر` – شراء رتبة عبر القائمة المنسدلة\nيتطلب رتبة بائع (تُعيّن بـ `!تعيين رتبة_بائع`)', inline: false },
           { name: '🔐 تسجيل الدخول', value: '`!تسجيل_الدخول` (للمودات)', inline: false },
@@ -2409,7 +2465,7 @@ client.on('messageCreate', async (message) => {
       const embed = new EmbedBuilder().setTitle('📋 إعدادات التذاكر').setColor(0x2b2d31)
         .setDescription(`**النص:** ${settings.text}`)
         .addFields(
-          { name: '📌 الأقسام', value: settings.sections.map((s, i) => `${i+1}. ${s.emoji || '📌'} **${s.name}** ${s.roleId ? `<@&${s.roleId}>` : '(بدون دور)'}`).join('\n') || 'لا يوجد أقسام' },
+          { name: '📌 الأقسام', value: settings.sections.map((s, i) => `${i+1}. ${s.emoji || '📌'} **${s.name}** ${s.roleId ? `<@&${s.roleId}>` : '(بدون دور)'}${s.canRestart ? ' 🔄' : ''}`).join('\n') || 'لا يوجد أقسام' },
           { name: '🖼️ الصورة', value: settings.image ? `[رابط](${settings.image})` : 'لا توجد صورة' }
         );
       if (generalImage) embed.setImage(generalImage);
@@ -2649,12 +2705,10 @@ client.on('interactionCreate', async (interaction) => {
       });
       await request.save();
 
-      // تسجيل في سجل الإجازات
       await createLeaveLog(guildId, interaction.user.id, 'requested', request._id, `${reason} (${duration} يوم)`);
 
       const config = await getGuildConfig(guildId);
       
-      // إرسال إلى قناة الطلبات
       const channel = config.leaveRequestChannel ? interaction.guild.channels.cache.get(config.leaveRequestChannel) : null;
       if (channel) {
         const embed = new EmbedBuilder()
@@ -2669,7 +2723,6 @@ client.on('interactionCreate', async (interaction) => {
         await channel.send({ content: `<@&${config.leaveManagerRole}>`, embeds: [embed], components: [row] });
       }
 
-      // إرسال إلى قناة سجلات الإجازات
       if (config.leaveLogChannel) {
         const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
         if (logChannel) {
@@ -2703,7 +2756,6 @@ client.on('interactionCreate', async (interaction) => {
         request.approvedBy = interaction.user.id;
         await request.save();
         
-        // تسجيل في سجل الإجازات
         await createLeaveLog(guildId, request.userId, 'approved', request._id, `بواسطة ${interaction.user.tag}`);
 
         const user = await getUser(guildId, request.userId);
@@ -2721,7 +2773,6 @@ client.on('interactionCreate', async (interaction) => {
           await member.roles.add(leaveRole);
         }
 
-        // إرسال إلى قناة السجلات
         if (config.leaveLogChannel) {
           const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
           if (logChannel) {
@@ -2743,10 +2794,8 @@ client.on('interactionCreate', async (interaction) => {
         request.status = 'rejected';
         await request.save();
         
-        // تسجيل في سجل الإجازات
         await createLeaveLog(guildId, request.userId, 'rejected', request._id, `بواسطة ${interaction.user.tag}`);
 
-        // إرسال إلى قناة السجلات
         if (config.leaveLogChannel) {
           const logChannel = interaction.guild.channels.cache.get(config.leaveLogChannel);
           if (logChannel) {
@@ -2997,7 +3046,10 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- المتجر -----
+    // ============================================================
+    // == المتجر ==
+    // ============================================================
+
     if (interaction.isButton() && interaction.customId === 'open_add_product_modal') {
       if (!(await hasPermission(interaction.member, guildId))) {
         return interaction.reply({ content: '❌ ليس لديك صلاحية.', ephemeral: true });
@@ -3186,10 +3238,16 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '❌ قسم غير موجود.', ephemeral: true });
       }
       
+      // 🔹 زيادة العداد
+      settings.ticketCounter += 1;
+      await settings.save();
+      const ticketNumber = settings.ticketCounter;
+      const emoji = section.emoji || '📌';
+      
       const role = section.roleId ? interaction.guild.roles.cache.get(section.roleId) : null;
       
       const channel = await interaction.guild.channels.create({
-        name: `تذكرة-${interaction.user.username}`,
+        name: `${emoji}-تذكرة-${ticketNumber}`,
         type: ChannelType.GuildText,
         parent: interaction.channel.parentId,
         permissionOverwrites: [
@@ -3218,7 +3276,7 @@ client.on('interactionCreate', async (interaction) => {
       
       const embed = new EmbedBuilder()
         .setTitle('🎫 تذكرة جديدة')
-        .setDescription(`**القسم:** ${sectionName}\n**المستخدم:** ${interaction.user}\nاستخدم الأزرار أدناه لإدارة التذكرة.`)
+        .setDescription(`**القسم:** ${sectionName}\n**المستخدم:** ${interaction.user}\n**رقم التذكرة:** #${ticketNumber}\nاستخدم الأزرار أدناه لإدارة التذكرة.`)
         .setColor(0x2b2d31)
         .setTimestamp();
       
@@ -3235,11 +3293,13 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // ----- استلام التذكرة (زر) -----
     if (interaction.isButton() && interaction.customId === 'claim_ticket') {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
       }
       
+      // التحقق من الصلاحية: أي شخص لديه صلاحية ViewChannel يمكنه الاستلام، لكننا نعطي صلاحية الإدارة لمن يستلم.
       await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
         ManageChannels: true,
       });
@@ -3255,6 +3315,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // ----- إضافة عضو (زر) -----
     if (interaction.isButton() && interaction.customId === 'add_member_ticket') {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
@@ -3267,7 +3328,7 @@ client.on('interactionCreate', async (interaction) => {
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
               .setCustomId('member_id')
-              .setLabel('معرف العضو (ID)')
+              .setLabel('أدخل معرف العضو (يمكنك الحصول عليه بكتابة \\@username ثم نسخ المعرف)')
               .setStyle(TextInputStyle.Short)
               .setRequired(true)
               .setPlaceholder('مثال: 123456789012345678')
@@ -3281,7 +3342,7 @@ client.on('interactionCreate', async (interaction) => {
       const memberId = interaction.fields.getTextInputValue('member_id').trim();
       const member = await interaction.guild.members.fetch(memberId).catch(() => null);
       if (!member) {
-        return interaction.reply({ content: '❌ العضو غير موجود.', ephemeral: true });
+        return interaction.reply({ content: '❌ العضو غير موجود. تأكد من المعرف.', ephemeral: true });
       }
       
       await interaction.channel.permissionOverwrites.edit(member.id, {
@@ -3307,13 +3368,24 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // ----- إغلاق التذكرة (زر) مع صلاحيات المتحكم والمستلم والمنشئ -----
     if (interaction.isButton() && interaction.customId === 'close_ticket') {
       if (!interaction.channel.name.startsWith('تذكرة-')) {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
       }
 
-      await updateTicketLog(interaction.channel.id, { status: 'closed', closedAt: new Date() });
       const log = await getTicketLogByChannel(interaction.channel.id);
+      if (!log) return interaction.reply({ content: '❌ هذه القناة ليست تذكرة مسجلة.', ephemeral: true });
+      
+      // 🔹 التحقق من الصلاحية للإغلاق
+      const isController = await hasPermission(interaction.member, guildId);
+      const isClaimer = log.claimedBy === interaction.user.id;
+      const isCreator = log.userId === interaction.user.id;
+      if (!isController && !isClaimer && !isCreator) {
+        return interaction.reply({ content: '❌ ليس لديك صلاحية لإغلاق هذه التذكرة.\nيمكن للمتحكمين، أو المستلم، أو المنشئ إغلاقها.', ephemeral: true });
+      }
+
+      await updateTicketLog(interaction.channel.id, { status: 'closed', closedAt: new Date() });
       const config = await getGuildConfig(guildId);
 
       let htmlBuffer = null;
@@ -3381,6 +3453,16 @@ client.on('interactionCreate', async (interaction) => {
         } catch (e) {}
       }
 
+      // 🔹 التحقق من إمكانية إعادة الفتح
+      const settings = await getTicketSettings(guildId);
+      const section = settings.sections.find(s => s.name === log.section);
+      if (section && section.canRestart) {
+        const restartRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`restart_ticket_${log._id}`).setLabel('🔄 إعادة فتح التذكرة').setStyle(ButtonStyle.Primary)
+        );
+        await interaction.followUp({ content: 'يمكنك إعادة فتح هذه التذكرة عبر الزر أدناه.', components: [restartRow] });
+      }
+
       await deleteTicketLog(interaction.channel.id);
 
       setTimeout(async () => {
@@ -3390,6 +3472,75 @@ client.on('interactionCreate', async (interaction) => {
           console.error('خطأ في حذف التذكرة:', e);
         }
       }, 5000);
+      return;
+    }
+
+    // ----- إعادة فتح التذكرة (زر) -----
+    if (interaction.isButton() && interaction.customId.startsWith('restart_ticket_')) {
+      const logId = interaction.customId.split('_')[2];
+      const oldLog = await TicketLog.findById(logId);
+      if (!oldLog) return interaction.reply({ content: '❌ سجل التذكرة غير موجود.', ephemeral: true });
+      
+      // إعادة إنشاء تذكرة جديدة بنفس القسم والمستخدم
+      const settings = await getTicketSettings(guildId);
+      const section = settings.sections.find(s => s.name === oldLog.section);
+      if (!section) return interaction.reply({ content: '❌ القسم غير موجود حالياً.', ephemeral: true });
+      
+      // إعادة استخدام العداد أو زيادته
+      settings.ticketCounter += 1;
+      await settings.save();
+      const ticketNumber = settings.ticketCounter;
+      const emoji = section.emoji || '📌';
+      
+      const role = section.roleId ? interaction.guild.roles.cache.get(section.roleId) : null;
+      
+      const channel = await interaction.guild.channels.create({
+        name: `${emoji}-تذكرة-${ticketNumber}`,
+        type: ChannelType.GuildText,
+        parent: interaction.channel.parentId,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.id,
+            deny: [PermissionsBitField.Flags.ViewChannel],
+          },
+          {
+            id: oldLog.userId,
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
+          },
+          ...(role ? [{
+            id: role.id,
+            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
+          }] : [])
+        ]
+      });
+      
+      await createTicketLog(guildId, channel.id, oldLog.userId, oldLog.section);
+      
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('claim_ticket').setLabel('📥 استلام التذكرة').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('add_member_ticket').setLabel('➕ إضافة عضو').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('close_ticket').setLabel('🔒 إغلاق').setStyle(ButtonStyle.Danger)
+      );
+      
+      const embed = new EmbedBuilder()
+        .setTitle('🔄 تذكرة معاد فتحها')
+        .setDescription(`**القسم:** ${oldLog.section}\n**المستخدم:** <@${oldLog.userId}>\n**رقم التذكرة:** #${ticketNumber}\n(تم إعادة فتحها بناءً على طلب ${interaction.user})`)
+        .setColor(0x2b2d31)
+        .setTimestamp();
+      
+      await channel.send({
+        content: `<@${oldLog.userId}> ${role ? `<@&${role.id}>` : ''}`,
+        embeds: [embed],
+        components: [row]
+      });
+      
+      await interaction.reply({
+        content: `✅ تم إعادة فتح التذكرة: ${channel}`,
+        ephemeral: true
+      });
+      
+      // حذف السجل القديم (اختياري) أو تركه للرجوع إليه
+      // await deleteTicketLog(oldLog.channelId); // لا نحذفه بل نتركه كسجل
       return;
     }
 
