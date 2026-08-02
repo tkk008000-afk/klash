@@ -68,7 +68,7 @@ const ConfigSchema = new mongoose.Schema({
   seniorAdminRole: String,
   juniorAdminRole: String,
   sellerRole: String,
-  botControllerRole: String, // 🔹 رتبة التحكم بالبوت
+  botControllerRole: String,
   pointsPerTask: { type: Number, default: 10 },
   dailySalary: { type: Number, default: 5 },
   promotionPoints: { type: Number, default: 100 },
@@ -83,7 +83,7 @@ const UserSchema = new mongoose.Schema({
   xp: { type: Number, default: 0 },
   level: { type: Number, default: 0 },
   messages: { type: Number, default: 0 },
-  kl: { type: Number, default: 0 },
+  pt: { type: Number, default: 0 }, // 🔹 تغيير من kl إلى pt
   adminPoints: { type: Number, default: 0 },
   lastDaily: Date,
   lastVoiceReward: { type: Date, default: null },
@@ -175,11 +175,11 @@ const TicketSettingsSchema = new mongoose.Schema({
     name: String,
     roleId: String,
     emoji: { type: String, default: '📌' },
-    canRestart: { type: Boolean, default: false }, // 🔹 إعادة تعيين القسم
+    canRestart: { type: Boolean, default: false },
   }],
   text: { type: String, default: 'مرحباً بكم في قسم التذاكر...' },
   image: { type: String, default: 'https://i.imgur.com/GkKqN3G.png' },
-  ticketCounter: { type: Number, default: 0 }, // 🔹 عداد التذاكر
+  ticketCounter: { type: Number, default: 0 },
 });
 const TicketSettings = mongoose.model('TicketSettings', TicketSettingsSchema);
 
@@ -270,7 +270,6 @@ async function hasPermission(member, guildId) {
   if (OWNER_ID && member.id === OWNER_ID) return true;
   if (await isController(member.id, guildId)) return true;
   const config = await getGuildConfig(guildId);
-  // 🔹 التحقق من رتبة التحكم بالبوت
   if (config.botControllerRole && member.roles.cache.has(config.botControllerRole)) return true;
   return false;
 }
@@ -560,7 +559,7 @@ client.once('ready', async () => {
   console.log(`👑 صاحب البوت: ${OWNER_ID}`);
   client.user.setActivity('The Kingdom Never Falls.', { type: ActivityType.Watching });
 
-  // ====== نظام منح 1 KL لكل دقيقة في الفويس ======
+  // ====== نظام منح 1 PT لكل دقيقة في الفويس (تغيير KL → PT) ======
   setInterval(async () => {
     const now = Date.now();
     for (const [key, joinTime] of voiceSessions) {
@@ -576,14 +575,14 @@ client.once('ready', async () => {
       const elapsed = now - joinTime;
       if (elapsed >= 60000) {
         const user = await getUser(guildId, userId);
-        user.kl += 1;
+        user.pt += 1; // PT بدلاً من KL
         await user.save();
         voiceSessions.set(key, now);
         try {
           const dmEmbed = new EmbedBuilder()
             .setColor(0x2b2d31)
             .setTitle('🎧 مكافأة الفويس')
-            .setDescription(`حصلت على **1 KL** مقابل قضائك دقيقة في الفويس.`)
+            .setDescription(`حصلت على **1 PT** مقابل قضائك دقيقة في الفويس.`)
             .setFooter({ text: 'استمر في التفاعل لكسب المزيد!' })
             .setTimestamp();
           await member.send({ embeds: [dmEmbed] });
@@ -595,9 +594,8 @@ client.once('ready', async () => {
   // ====== تسجيل أوامر سلاش ======
   if (CLIENT_ID && CLIENT_ID !== 'YOUR_CLIENT_ID') {
     const commands = [
-      // أوامر عامة
       new SlashCommandBuilder().setName('مساعدة').setDescription('عرض قائمة الأوامر'),
-      new SlashCommandBuilder().setName('رصيدي').setDescription('عرض رصيدك من KL والنقاط الإدارية'),
+      new SlashCommandBuilder().setName('رصيدي').setDescription('عرض رصيدك من PT والنقاط الإدارية'),
       new SlashCommandBuilder().setName('توب').setDescription('عرض أغنى 10 أشخاص في السيرفر'),
       new SlashCommandBuilder().setName('مصرف').setDescription('الحصول على الراتب اليومي'),
       new SlashCommandBuilder().setName('مستوى').setDescription('عرض مستوى عضو').addUserOption(opt => opt.setName('عضو').setDescription('اختر عضواً (اختياري)').setRequired(false)),
@@ -607,34 +605,21 @@ client.once('ready', async () => {
       new SlashCommandBuilder().setName('بينق').setDescription('عرض سرعة الاستجابة'),
       new SlashCommandBuilder().setName('قائمة_المتحكمين').setDescription('عرض قائمة المتحكمين'),
       new SlashCommandBuilder().setName('تغيير_اسم').setDescription('تغيير اسمك المستعار في السيرفر'),
-      
-      // أوامر التذاكر
       new SlashCommandBuilder().setName('بانل').setDescription('إنشاء لوحة التذاكر'),
       new SlashCommandBuilder().setName('عرض_تذكرة').setDescription('عرض إعدادات التذاكر'),
       new SlashCommandBuilder().setName('لوق_تذكرة').setDescription('إنشاء تقرير HTML للتذكرة الحالية'),
-      
-      // أوامر المتجر
       new SlashCommandBuilder().setName('متجر').setDescription('فتح المتجر لشراء الرتب'),
       new SlashCommandBuilder().setName('بانل_اضافة_منتج').setDescription('إنشاء لوحة إضافة منتج (للمتحكمين)'),
-      
-      // أوامر الردود التلقائية
       new SlashCommandBuilder().setName('رد_تلقائي').setDescription('إضافة رد تلقائي').addStringOption(opt => opt.setName('الكلمة').setDescription('الكلمة المفتاحية').setRequired(true)).addStringOption(opt => opt.setName('الرد').setDescription('نص الرد').setRequired(true)),
       new SlashCommandBuilder().setName('عرض_الردود').setDescription('عرض جميع الردود التلقائية'),
       new SlashCommandBuilder().setName('حذف_رد_تلقائي').setDescription('حذف رد تلقائي').addStringOption(opt => opt.setName('الكلمة').setDescription('الكلمة المفتاحية').setRequired(true)),
-      
-      // أوامر الإدارة
       new SlashCommandBuilder().setName('لوحة_المهام').setDescription('فتح لوحة المهام الإدارية'),
-      new SlashCommandBuilder().setName('بانل_اجازات').setDescription('فتح لوحة الإجازات'),
+      new SlashCommandBuilder().setName('بانل_اجازات').setDescription('فتح لوحة الإجازات (مدير الإجازات)'),
       new SlashCommandBuilder().setName('طلب_اجازة').setDescription('تقديم طلب إجازة'),
-      new SlashCommandBuilder().setName('الموافقة_على_الاجازات').setDescription('عرض طلبات الإجازات المعلقة'),
       new SlashCommandBuilder().setName('الاجازات_الحالية').setDescription('عرض الإجازات النشطة'),
       new SlashCommandBuilder().setName('سجل_الاجازات').setDescription('عرض سجل الإجازات'),
-      
-      // أوامر أخرى
       new SlashCommandBuilder().setName('بانل_اقتراح').setDescription('إنشاء لوحة الاقتراحات'),
       new SlashCommandBuilder().setName('رتب').setDescription('إنشاء لوحة رتب الإشعارات'),
-      
-      // أمر الإعدادات (للمالك فقط)
       new SlashCommandBuilder().setName('تعيين').setDescription('إعدادات البوت (للمالك فقط)').addStringOption(opt => opt.setName('الخيار').setDescription('الخيار المطلوب').setRequired(true)).addStringOption(opt => opt.setName('القيمة').setDescription('القيمة الجديدة').setRequired(false)),
     ].map(cmd => cmd.toJSON());
 
@@ -833,13 +818,13 @@ client.on('messageCreate', async (message) => {
     let requiredXP = (currentLevel + 1) * 100;
 
     if (user.messages % 30 === 0 && user.messages > 0) {
-      user.kl += 15;
+      user.pt += 15; // PT بدلاً من KL
       await user.save();
       try {
         const dmEmbed = new EmbedBuilder()
           .setColor(0x2b2d31)
           .setTitle('📝 مكافأة الرسائل')
-          .setDescription(`وصلت إلى **${user.messages}** رسالة!\nحصلت على **15 KL** 🎉`)
+          .setDescription(`وصلت إلى **${user.messages}** رسالة!\nحصلت على **15 PT** 🎉`)
           .setFooter({ text: 'استمر في الكتابة!' })
           .setTimestamp();
         await message.author.send({ embeds: [dmEmbed] });
@@ -939,7 +924,7 @@ client.on('interactionCreate', async (interaction) => {
     const config = await getGuildConfig(guildId);
 
     // ----- لوحة الاجازات (سلاش) -----
-    if (commandName === 'لوحة_الاجازات') {
+    if (commandName === 'بانل_اجازات') {
       if (!config.leaveManagerRole || !interaction.member.roles.cache.has(config.leaveManagerRole)) {
         return interaction.reply({ content: '❌ ليس لديك صلاحية الوصول إلى لوحة الاجازات.', ephemeral: true });
       }
@@ -1026,8 +1011,27 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- باقي الأوامر السلاش (سيتم معالجتها في مكان آخر) -----
-    // سيتم التعامل مع الأوامر الأخرى في الأقسام المخصصة لها
+    // ----- طلب إجازة (سلاش) -----
+    if (commandName === 'طلب_اجازة') {
+      if (!(await isJuniorAdmin(interaction.member, guildId))) {
+        return interaction.reply({ content: '❌ هذا الأمر للإداريين فقط.', ephemeral: true });
+      }
+      const modal = new ModalBuilder()
+        .setCustomId('leave_modal')
+        .setTitle('📝 طلب إجازة')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('leave_reason').setLabel('سبب الإجازة').setStyle(TextInputStyle.Paragraph).setRequired(true)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('leave_duration').setLabel('عدد الأيام').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('مثال: 5')
+          )
+        );
+      await interaction.showModal(modal);
+      return;
+    }
+
+    // باقي الأوامر السلاش سيتم معالجتها في مكان آخر
   }
 
   // باقي المعالجات (أزرار، قوائم، مودالات) تبقى كما هي.
@@ -1070,23 +1074,23 @@ client.on('messageCreate', async (message) => {
   try {
 
     // ============================================================
-    // == أوامر العملة (KL) ==
+    // == أوامر العملة (PT) ==
     // ============================================================
 
     if (cmd === 'رصيدي') {
       const user = await getUser(guildId, message.author.id);
       const embed = new EmbedBuilder()
         .setTitle(`💰 رصيد ${message.author.username}`)
-        .setDescription(`**KL:** ${user.kl}\n**نقاط إدارية:** ${user.adminPoints}`)
+        .setDescription(`**PT:** ${user.pt}\n**نقاط إدارية:** ${user.adminPoints}`)
         .setColor(0x2b2d31);
       await message.channel.send({ embeds: [embed] });
       return;
     }
 
     if (cmd === 'توب') {
-      const top = await User.find({ guildId }).sort({ kl: -1 }).limit(10);
+      const top = await User.find({ guildId }).sort({ pt: -1 }).limit(10);
       if (!top.length) {
-        await message.reply('📭 لا يوجد أي شخص لديه KL حتى الآن.');
+        await message.reply('📭 لا يوجد أي شخص لديه PT حتى الآن.');
         return;
       }
       let desc = '';
@@ -1094,7 +1098,7 @@ client.on('messageCreate', async (message) => {
       for (const entry of top) {
         const member = message.guild.members.cache.get(entry.userId);
         const name = member ? member.user.username : `مستخدم ${entry.userId}`;
-        desc += `**#${rank}** ${name} - \`${entry.kl} KL\`\n`;
+        desc += `**#${rank}** ${name} - \`${entry.pt} PT\`\n`;
         rank++;
       }
       const embed = new EmbedBuilder().setTitle('🏆 ترتيب أغنى 10 أشخاص').setDescription(desc).setColor(0x2b2d31).setTimestamp();
@@ -1118,17 +1122,17 @@ client.on('messageCreate', async (message) => {
         return;
       }
       const user = await getUser(guildId, target.id);
-      user.kl += amount;
+      user.pt += amount;
       await user.save();
       const embed = new EmbedBuilder()
         .setTitle('✅ تم إعطاء العملات')
-        .setDescription(`تم إعطاء <@${target.id}> **${amount} KL** بنجاح.\nرصيده الآن: **${user.kl} KL**`)
+        .setDescription(`تم إعطاء <@${target.id}> **${amount} PT** بنجاح.\nرصيده الآن: **${user.pt} PT**`)
         .setColor(0x2b2d31);
       await message.channel.send({ embeds: [embed] });
       try {
         const dmEmbed = new EmbedBuilder()
-          .setTitle('💰 استلام KL')
-          .setDescription(`تم إعطاؤك **${amount} KL** في **${message.guild.name}**!\nرصيدك الحالي: **${user.kl} KL**`)
+          .setTitle('💰 استلام PT')
+          .setDescription(`تم إعطاؤك **${amount} PT** في **${message.guild.name}**!\nرصيدك الحالي: **${user.pt} PT**`)
           .setColor(0x2b2d31);
         await target.send({ embeds: [dmEmbed] }).catch(() => {});
       } catch (e) {}
@@ -1151,15 +1155,15 @@ client.on('messageCreate', async (message) => {
         return;
       }
       const user = await getUser(guildId, target.id);
-      if (user.kl < amount) {
-        await message.reply(`⚠️ رصيده غير كافٍ. لديه **${user.kl} KL** فقط.`);
+      if (user.pt < amount) {
+        await message.reply(`⚠️ رصيده غير كافٍ. لديه **${user.pt} PT** فقط.`);
         return;
       }
-      user.kl -= amount;
+      user.pt -= amount;
       await user.save();
       const embed = new EmbedBuilder()
         .setTitle('✅ تم سحب العملات')
-        .setDescription(`تم سحب **${amount} KL** من <@${target.id}>.\nرصيده الآن: **${user.kl} KL**`)
+        .setDescription(`تم سحب **${amount} PT** من <@${target.id}>.\nرصيده الآن: **${user.pt} PT**`)
         .setColor(0x2b2d31);
       await message.channel.send({ embeds: [embed] });
       return;
@@ -1176,10 +1180,10 @@ client.on('messageCreate', async (message) => {
         return;
       }
       const salary = config.dailySalary || 5;
-      user.kl += salary;
+      user.pt += salary;
       user.lastDaily = new Date();
       await user.save();
-      await message.reply(`✅ تم إضافة **${salary} KL** كراتب يومي. رصيدك الآن: **${user.kl} KL**`);
+      await message.reply(`✅ تم إضافة **${salary} PT** كراتب يومي. رصيدك الآن: **${user.pt} PT**`);
       return;
     }
 
@@ -1205,7 +1209,7 @@ client.on('messageCreate', async (message) => {
     }
 
     // ============================================================
-    // == الإجازات (محسنة) ==
+    // == الإجازات (لوحة تحكم موحدة) ==
     // ============================================================
 
     if (cmd === 'بانل_اجازات' || cmd === 'لوحة_اجازات') {
@@ -1246,48 +1250,8 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    if (cmd === 'طلب_اجازة') {
-      if (!(await isJuniorAdmin(message.member, guildId))) {
-        return message.reply('❌ هذا الأمر للإداريين فقط.');
-      }
-      const modal = new ModalBuilder()
-        .setCustomId('leave_modal')
-        .setTitle('📝 طلب إجازة')
-        .addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder().setCustomId('leave_reason').setLabel('سبب الإجازة').setStyle(TextInputStyle.Paragraph).setRequired(true)
-          ),
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder().setCustomId('leave_duration').setLabel('عدد الأيام').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('مثال: 5')
-          )
-        );
-      await message.showModal(modal);
-      return;
-    }
-
-    if (cmd === 'الموافقة_على_الاجازات') {
-      if (!config.leaveManagerRole || !message.member.roles.cache.has(config.leaveManagerRole)) {
-        return message.reply('❌ ليس لديك الصلاحية للموافقة على الإجازات.');
-      }
-      const pending = await LeaveRequest.find({ guildId, status: 'pending' });
-      if (!pending.length) return message.reply('📭 لا توجد طلبات إجازة معلقة.');
-      
-      let desc = '';
-      for (const req of pending) {
-        const member = await message.guild.members.fetch(req.userId).catch(() => null);
-        const name = member ? member.user.username : 'مستخدم غير معروف';
-        desc += `**${name}** - ${req.reason} (${req.duration} يوم)\n`;
-      }
-      const embed = new EmbedBuilder()
-        .setTitle('📋 طلبات الإجازات المعلقة')
-        .setDescription(desc)
-        .setColor(0x2b2d31)
-        .setFooter({ text: `عدد الطلبات: ${pending.length}` })
-        .setTimestamp();
-      
-      await message.channel.send({ embeds: [embed] });
-      return;
-    }
+    // تم دمج أوامر الإجازات الأخرى في اللوحة، لذا لم تعد هناك حاجة لأوامر منفصلة.
+    // مع الاحتفاظ بأمر طلب_اجازة للمستخدمين العاديين.
 
     // ============================================================
     // == المتجر ==
@@ -1332,7 +1296,7 @@ client.on('messageCreate', async (message) => {
         return {
           label: role ? role.name : 'رتبة غير موجودة',
           value: item._id.toString(),
-          description: `${item.price} KL`,
+          description: `${item.price} PT`,
           emoji: '🛒',
         };
       });
@@ -1558,7 +1522,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // 🔹 رتبة التحكم بالبوت
       if (sub === 'رتبة_تحكم_البوت') {
         const role = message.mentions.roles.first();
         if (!role) { await message.reply('⚠️ منشن الرتبة.'); return; }
@@ -1799,7 +1762,6 @@ client.on('messageCreate', async (message) => {
         }
 
         if (action === 'إضافة') {
-          // 🔹 دعم خيار إعادة التعيين
           const regex = /^(.+?)\s+<@&(\d+)>\s*(\S+)?\s*(قابل_لإعادة)?$/;
           const parts = actionValue.match(regex);
           if (!parts) { await message.reply('⚠️ الصيغة: `!تعيين تذكرة إضافة [الاسم] @دور :ايموجي: [قابل_لإعادة]`'); return; }
@@ -1898,7 +1860,7 @@ client.on('messageCreate', async (message) => {
         const salary = parseInt(value);
         if (!salary || salary < 0) { await message.reply('⚠️ أدخل راتباً صحيحاً.'); return; }
         await updateGuildConfig(guildId, { dailySalary: salary });
-        await message.reply(`✅ تم تعيين الراتب اليومي: ${salary} KL`);
+        await message.reply(`✅ تم تعيين الراتب اليومي: ${salary} PT`);
         return;
       }
 
@@ -1919,7 +1881,7 @@ client.on('messageCreate', async (message) => {
           return;
         }
         await addStoreItem(guildId, role.id, price, desc || 'لا يوجد وصف');
-        await message.reply(`✅ تم إضافة المنتج ${role} بسعر ${price} KL`);
+        await message.reply(`✅ تم إضافة المنتج ${role} بسعر ${price} PT`);
         return;
       }
 
@@ -1976,13 +1938,13 @@ client.on('messageCreate', async (message) => {
         .setColor(0x2b2d31)
         .addFields(
           { name: '👑 نظام التحكم', value: '`متحكم @شخص` `الغاء_متحكم @شخص` `قائمة_المتحكمين`', inline: false },
-          { name: '📋 المهام', value: '`!لوحة_المهام` (للمدراء العلويين) – مع نقاط KL + نقاط إدارية وإثبات', inline: false },
-          { name: '📅 الإجازات', value: '`!بانل_اجازات` (للمتحكمين)\n`!طلب_اجازة` (للإداريين)\n`!الموافقة_على_الاجازات` (لمسؤول الإجازات)\n**أوامر سلاش:** `/لوحة_اجازات` `/الاجازات_الحالية` `/سجل_الاجازات`', inline: false },
-          { name: '💰 العملة', value: '`!رصيدي` (يعرض KL + نقاط إدارية)\n`!مصرف` (راتب يومي)\n`!اعطاء_عملات` و `!سحب_عملات` (للمتحكمين)\n`!توب` (ترتيب العملة)\n**مكافآت تلقائية:** 15 KL كل 30 رسالة، 1 KL كل دقيقة في الفويس', inline: false },
+          { name: '📋 المهام', value: '`!لوحة_المهام` (للمدراء العلويين) – مع نقاط PT + نقاط إدارية وإثبات', inline: false },
+          { name: '📅 الإجازات', value: '`!بانل_اجازات` (لوحة تحكم موحدة للمسؤول)\n`!طلب_اجازة` (للإداريين)\n**أوامر سلاش:** `/بانل_اجازات` `/الاجازات_الحالية` `/سجل_الاجازات`', inline: false },
+          { name: '💰 العملة', value: '`!رصيدي` (يعرض PT + نقاط إدارية)\n`!مصرف` (راتب يومي)\n`!اعطاء_عملات` و `!سحب_عملات` (للمتحكمين)\n`!توب` (ترتيب العملة)\n**مكافآت تلقائية:** 15 PT كل 30 رسالة، 1 PT كل دقيقة في الفويس', inline: false },
           { name: '🛒 المتجر', value: '`!بانل_اضافة_منتج` (للمتحكمين) – لإضافة منتج\n`!متجر` – شراء رتبة عبر القائمة المنسدلة\nيتطلب رتبة بائع (تُعيّن بـ `!تعيين رتبة_بائع`)', inline: false },
           { name: '🔐 تسجيل الدخول', value: '`!تسجيل_الدخول` (للمودات)', inline: false },
           { name: '📊 المستويات', value: '`!مستوى` `!ترتيب`', inline: false },
-          { name: '🎫 التذاكر', value: '`!بانل` `!عرض_تذكرة` `!تعيين تذكرة`\n`!لوق_تذكرة` (داخل التذكرة)', inline: false },
+          { name: '🎫 التذاكر', value: '`!بانل` `!عرض_تذكرة` `!تعيين تذكرة`\n`!لوق_تذكرة` (داخل التذكرة)\n**ملاحظة:** اسم الروم = (ايموجي) + رقم التذكرة', inline: false },
           { name: '💡 الاقتراحات', value: '`!بانل_اقتراح`', inline: false },
           { name: '🛡️ الإدارة', value: 'حظر، طرد، كتم، تحذير، مسح، قفل، فتح، نقل_كل، طرد_صوتي، كتم_صوتي، فك_كتم_صوتي، إدارة الرتب، القنوات', inline: false },
           { name: '⚙️ الإعدادات', value: '`!تعيين` (للمالك فقط)', inline: false }
@@ -2904,7 +2866,7 @@ client.on('interactionCreate', async (interaction) => {
               new TextInputBuilder().setCustomId('task_to').setLabel('معرف المستلم (ID)').setStyle(TextInputStyle.Short).setRequired(true)
             ),
             new ActionRowBuilder().addComponents(
-              new TextInputBuilder().setCustomId('task_kl_points').setLabel('نقاط KL').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('مثال: 10')
+              new TextInputBuilder().setCustomId('task_kl_points').setLabel('نقاط PT').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('مثال: 10')
             ),
             new ActionRowBuilder().addComponents(
               new TextInputBuilder().setCustomId('task_admin_points').setLabel('نقاط إدارية').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('مثال: 5')
@@ -2948,7 +2910,7 @@ client.on('interactionCreate', async (interaction) => {
       const title = interaction.fields.getTextInputValue('task_title');
       const desc = interaction.fields.getTextInputValue('task_desc');
       const toId = interaction.fields.getTextInputValue('task_to');
-      const klPoints = parseInt(interaction.fields.getTextInputValue('task_kl_points')) || 0;
+      const ptPoints = parseInt(interaction.fields.getTextInputValue('task_kl_points')) || 0; // PT
       const adminPoints = parseInt(interaction.fields.getTextInputValue('task_admin_points')) || 0;
       const target = await interaction.guild.members.fetch(toId).catch(() => null);
       if (!target) return interaction.reply({ content: '❌ المستلم غير موجود.', ephemeral: true });
@@ -2958,15 +2920,15 @@ client.on('interactionCreate', async (interaction) => {
         assignedTo: toId,
         title,
         description: desc,
-        points: klPoints,
+        points: ptPoints,
         adminPoints: adminPoints,
       });
       await task.save();
       const user = await getUser(guildId, toId);
       user.assignedTasks.push({ taskId: task._id, status: 'pending' });
       await user.save();
-      await interaction.reply({ content: `✅ تم إنشاء المهمة وإرسالها إلى ${target}.\nنقاط KL: ${klPoints} | نقاط إدارية: ${adminPoints}`, ephemeral: true });
-      try { await target.send(`📩 تم تكليفك بمهمة جديدة: **${title}**\nنقاط KL: ${klPoints} | نقاط إدارية: ${adminPoints}\nاستخدم \`!لوحة_المهام\` لقبولها.`); } catch (e) {}
+      await interaction.reply({ content: `✅ تم إنشاء المهمة وإرسالها إلى ${target}.\nنقاط PT: ${ptPoints} | نقاط إدارية: ${adminPoints}`, ephemeral: true });
+      try { await target.send(`📩 تم تكليفك بمهمة جديدة: **${title}**\nنقاط PT: ${ptPoints} | نقاط إدارية: ${adminPoints}\nاستخدم \`!لوحة_المهام\` لقبولها.`); } catch (e) {}
       return;
     }
 
@@ -3017,7 +2979,7 @@ client.on('interactionCreate', async (interaction) => {
       task.proofImage = proofImage;
       await task.save();
       const user = await getUser(guildId, interaction.user.id);
-      user.kl += task.points;
+      user.pt += task.points;
       user.adminPoints += task.adminPoints;
       await user.save();
       const userTasks = user.assignedTasks;
@@ -3040,7 +3002,7 @@ client.on('interactionCreate', async (interaction) => {
       }
       const creator = await interaction.guild.members.fetch(task.assignedBy).catch(() => null);
       await interaction.reply({
-        content: `✅ تم إنهاء المهمة **${task.title}**\nحصلت على **${task.points} KL** و **${task.adminPoints} نقاط إدارية**.\nالإثبات: ${proofText}${proofImage ? `\n[صورة](${proofImage})` : ''}`,
+        content: `✅ تم إنهاء المهمة **${task.title}**\nحصلت على **${task.points} PT** و **${task.adminPoints} نقاط إدارية**.\nالإثبات: ${proofText}${proofImage ? `\n[صورة](${proofImage})` : ''}`,
         ephemeral: true
       });
       return;
@@ -3069,7 +3031,7 @@ client.on('interactionCreate', async (interaction) => {
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
               .setCustomId('product_price')
-              .setLabel('السعر (KL)')
+              .setLabel('السعر (PT)')
               .setStyle(TextInputStyle.Short)
               .setRequired(true)
               .setPlaceholder('مثال: 50')
@@ -3102,11 +3064,11 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '❌ الرتبة غير موجودة.', ephemeral: true });
       }
       await addStoreItem(guildId, roleId, price, desc);
-      await interaction.reply({ content: `✅ تم إضافة المنتج **${role.name}** بسعر **${price} KL** بنجاح.`, ephemeral: true });
+      await interaction.reply({ content: `✅ تم إضافة المنتج **${role.name}** بسعر **${price} PT** بنجاح.`, ephemeral: true });
       await logToChannel(guildId, {
         title: '🛒 إضافة منتج',
         color: 0x2b2d31,
-        description: `**المنفذ:** ${interaction.user}\n**الرتبة:** ${role.name} (${roleId})\n**السعر:** ${price} KL\n**الوصف:** ${desc}`
+        description: `**المنفذ:** ${interaction.user}\n**الرتبة:** ${role.name} (${roleId})\n**السعر:** ${price} PT\n**الوصف:** ${desc}`
       });
       return;
     }
@@ -3136,7 +3098,7 @@ client.on('interactionCreate', async (interaction) => {
       const embed = new EmbedBuilder()
         .setTitle('🛒 طلب شراء جديد')
         .setColor(0x2b2d31)
-        .setDescription(`**المشتري:** ${interaction.user} (${interaction.user.id})\n**الرتبة:** ${role.name}\n**السعر:** ${item.price} KL\n**الوصف:** ${item.description || 'لا يوجد'}`)
+        .setDescription(`**المشتري:** ${interaction.user} (${interaction.user.id})\n**الرتبة:** ${role.name}\n**السعر:** ${item.price} PT\n**الوصف:** ${item.description || 'لا يوجد'}`)
         .setTimestamp();
       
       const row = new ActionRowBuilder().addComponents(
@@ -3184,10 +3146,10 @@ client.on('interactionCreate', async (interaction) => {
           return interaction.reply({ content: '❌ الرتبة غير موجودة.', ephemeral: true });
         }
         const user = await getUser(guildId, purchase.userId);
-        if (user.kl < purchase.price) {
-          return interaction.reply({ content: `⚠️ رصيد المستخدم غير كافٍ. لديه ${user.kl} KL فقط.`, ephemeral: true });
+        if (user.pt < purchase.price) {
+          return interaction.reply({ content: `⚠️ رصيد المستخدم غير كافٍ. لديه ${user.pt} PT فقط.`, ephemeral: true });
         }
-        user.kl -= purchase.price;
+        user.pt -= purchase.price;
         await user.save();
         await member.roles.add(role);
         purchase.status = 'completed';
@@ -3196,14 +3158,14 @@ client.on('interactionCreate', async (interaction) => {
         const embed = new EmbedBuilder()
           .setTitle('✅ تم تأكيد الشراء')
           .setColor(0x2b2d31)
-          .setDescription(`تم منح **${role.name}** لـ ${member}.\nالسعر: **${purchase.price} KL**\nالموافق: ${interaction.user}`)
+          .setDescription(`تم منح **${role.name}** لـ ${member}.\nالسعر: **${purchase.price} PT**\nالموافق: ${interaction.user}`)
           .setTimestamp();
         await interaction.reply({ embeds: [embed], ephemeral: false });
         
         try {
           const dmEmbed = new EmbedBuilder()
             .setTitle('🎉 تم شراء الرتبة بنجاح!')
-            .setDescription(`تم منحك رتبة **${role.name}** في **${interaction.guild.name}**.\nتم خصم **${purchase.price} KL** من رصيدك.`)
+            .setDescription(`تم منحك رتبة **${role.name}** في **${interaction.guild.name}**.\nتم خصم **${purchase.price} PT** من رصيدك.`)
             .setColor(0x2b2d31);
           await member.send({ embeds: [dmEmbed] });
         } catch (e) {}
@@ -3211,7 +3173,7 @@ client.on('interactionCreate', async (interaction) => {
         await logToChannel(guildId, {
           title: '🛒 شراء رتبة',
           color: 0x2b2d31,
-          description: `**المشتري:** ${member.user.tag}\n**الرتبة:** ${role.name}\n**السعر:** ${purchase.price} KL\n**الموافق:** ${interaction.user.tag}`
+          description: `**المشتري:** ${member.user.tag}\n**الرتبة:** ${role.name}\n**السعر:** ${purchase.price} PT\n**الموافق:** ${interaction.user.tag}`
         });
         
       } else if (action === 'reject') {
@@ -3247,7 +3209,7 @@ client.on('interactionCreate', async (interaction) => {
       const role = section.roleId ? interaction.guild.roles.cache.get(section.roleId) : null;
       
       const channel = await interaction.guild.channels.create({
-        name: `${emoji}-تذكرة-${ticketNumber}`,
+        name: `${emoji} ${ticketNumber}`, // 🔹 اسم القناة: (ايموجي) + رقم فقط
         type: ChannelType.GuildText,
         parent: interaction.channel.parentId,
         permissionOverwrites: [
@@ -3299,7 +3261,6 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '❌ هذه ليست قناة تذكرة.', ephemeral: true });
       }
       
-      // التحقق من الصلاحية: أي شخص لديه صلاحية ViewChannel يمكنه الاستلام، لكننا نعطي صلاحية الإدارة لمن يستلم.
       await interaction.channel.permissionOverwrites.edit(interaction.user.id, {
         ManageChannels: true,
       });
@@ -3327,11 +3288,11 @@ client.on('interactionCreate', async (interaction) => {
         .addComponents(
           new ActionRowBuilder().addComponents(
             new TextInputBuilder()
-              .setCustomId('member_id')
-              .setLabel('أدخل معرف العضو (يمكنك الحصول عليه بكتابة \\@username ثم نسخ المعرف)')
+              .setCustomId('member_input')
+              .setLabel('أدخل منشن العضو (مثل @user) أو المعرف')
               .setStyle(TextInputStyle.Short)
               .setRequired(true)
-              .setPlaceholder('مثال: 123456789012345678')
+              .setPlaceholder('@member أو 123456789012345678')
           )
         );
       await interaction.showModal(modal);
@@ -3339,10 +3300,19 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.isModalSubmit() && interaction.customId === 'add_member_modal') {
-      const memberId = interaction.fields.getTextInputValue('member_id').trim();
+      const input = interaction.fields.getTextInputValue('member_input').trim();
+      // محاولة استخراج المعرف من المنشن أو الرقم مباشرة
+      let memberId = input;
+      const mentionMatch = input.match(/<@!?(\d+)>/);
+      if (mentionMatch) {
+        memberId = mentionMatch[1];
+      } else if (!/^\d+$/.test(input)) {
+        return interaction.reply({ content: '⚠️ الرجاء إدخال منشن صحيح (مثل @user) أو المعرف الرقمي.', ephemeral: true });
+      }
+      
       const member = await interaction.guild.members.fetch(memberId).catch(() => null);
       if (!member) {
-        return interaction.reply({ content: '❌ العضو غير موجود. تأكد من المعرف.', ephemeral: true });
+        return interaction.reply({ content: '❌ العضو غير موجود. تأكد من المعرف أو المنشن.', ephemeral: true });
       }
       
       await interaction.channel.permissionOverwrites.edit(member.id, {
@@ -3377,7 +3347,6 @@ client.on('interactionCreate', async (interaction) => {
       const log = await getTicketLogByChannel(interaction.channel.id);
       if (!log) return interaction.reply({ content: '❌ هذه القناة ليست تذكرة مسجلة.', ephemeral: true });
       
-      // 🔹 التحقق من الصلاحية للإغلاق
       const isController = await hasPermission(interaction.member, guildId);
       const isClaimer = log.claimedBy === interaction.user.id;
       const isCreator = log.userId === interaction.user.id;
@@ -3453,7 +3422,6 @@ client.on('interactionCreate', async (interaction) => {
         } catch (e) {}
       }
 
-      // 🔹 التحقق من إمكانية إعادة الفتح
       const settings = await getTicketSettings(guildId);
       const section = settings.sections.find(s => s.name === log.section);
       if (section && section.canRestart) {
@@ -3481,12 +3449,10 @@ client.on('interactionCreate', async (interaction) => {
       const oldLog = await TicketLog.findById(logId);
       if (!oldLog) return interaction.reply({ content: '❌ سجل التذكرة غير موجود.', ephemeral: true });
       
-      // إعادة إنشاء تذكرة جديدة بنفس القسم والمستخدم
       const settings = await getTicketSettings(guildId);
       const section = settings.sections.find(s => s.name === oldLog.section);
       if (!section) return interaction.reply({ content: '❌ القسم غير موجود حالياً.', ephemeral: true });
       
-      // إعادة استخدام العداد أو زيادته
       settings.ticketCounter += 1;
       await settings.save();
       const ticketNumber = settings.ticketCounter;
@@ -3495,7 +3461,7 @@ client.on('interactionCreate', async (interaction) => {
       const role = section.roleId ? interaction.guild.roles.cache.get(section.roleId) : null;
       
       const channel = await interaction.guild.channels.create({
-        name: `${emoji}-تذكرة-${ticketNumber}`,
+        name: `${emoji} ${ticketNumber}`,
         type: ChannelType.GuildText,
         parent: interaction.channel.parentId,
         permissionOverwrites: [
@@ -3538,9 +3504,6 @@ client.on('interactionCreate', async (interaction) => {
         content: `✅ تم إعادة فتح التذكرة: ${channel}`,
         ephemeral: true
       });
-      
-      // حذف السجل القديم (اختياري) أو تركه للرجوع إليه
-      // await deleteTicketLog(oldLog.channelId); // لا نحذفه بل نتركه كسجل
       return;
     }
 
