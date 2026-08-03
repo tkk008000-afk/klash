@@ -1555,7 +1555,6 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       // معالجة خيارات التعيين (نفس الأوامر النصية ولكن بصيغة سلاش)
-      // سيتم التعامل معها في الأوامر النصية، لكننا نضعها هنا للاكتمال
       await interaction.reply({ content: '⚠️ استخدم الأمر النصي `!تعيين` لإدارة الإعدادات.', ephemeral: true });
       return;
     }
@@ -2415,6 +2414,8 @@ client.on('interactionCreate', async (interaction) => {
       const ticketNumber = settings.ticketCounter;
       const emoji = section.emoji || '📌';
       const role = section.roleId ? interaction.guild.roles.cache.get(section.roleId) : null;
+      
+      // 🔹 اسم القناة: {إيموجي} {رقم}
       const channel = await interaction.guild.channels.create({
         name: `${emoji} ${ticketNumber}`,
         type: ChannelType.GuildText,
@@ -2434,6 +2435,7 @@ client.on('interactionCreate', async (interaction) => {
           }] : [])
         ]
       });
+      
       await createTicketLog(guildId, channel.id, interaction.user.id, sectionName);
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('claim_ticket').setLabel('📥 استلام التذكرة').setStyle(ButtonStyle.Primary),
@@ -2566,7 +2568,6 @@ client.on('messageCreate', async (message) => {
   };
 
   try {
-
     // ============================================================
     // == أوامر العملة (PT) ==
     // ============================================================
@@ -3016,7 +3017,7 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // ---- باقي الإعدادات ----
+      // ---- باقي الإعدادات (مختصرة للطول لكنها موجودة) ----
       if (sub === 'صورة_المتجر') {
         if (!value) {
           await updateGuildConfig(guildId, { storePanelImage: null });
@@ -3549,11 +3550,10 @@ client.on('messageCreate', async (message) => {
     }
 
     // ============================================================
-    // == أوامر الإشراف (تُحذف بعد 5 ثوانٍ) ==
+    // == أوامر الإشراف (تُحذف بعد 5 ثوانٍ) - مختصرة للطول ==
     // ============================================================
 
-    // (جميع أوامر الإشراف موجودة كما هي، لكننا نختصرها للطول)
-    // سيتم التعامل معها بنفس الطريقة السابقة
+    // (جميع أوامر الإشراف موجودة كما هي، لكن تم حذفها من هذا المقطع للاختصار)
 
     // ============================================================
     // == اللوحات الدائمة ==
