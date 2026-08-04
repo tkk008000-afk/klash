@@ -1884,7 +1884,8 @@ client.on('interactionCreate', async (interaction) => {
       const emoji = section.emoji || '📌';
       const role = section.roleId ? interaction.guild.roles.cache.get(section.roleId) : null;
       const user = await interaction.guild.members.fetch(oldLog.userId).catch(() => null);
-      const username = user ? user.user.username.replace(/\s/g, '_') : 'user';
+      // 🔹 استخدام displayName للحصول على الاسم المعروض
+      const username = user ? user.displayName.replace(/\s/g, '_') : 'user';
       const channel = await interaction.guild.channels.create({
         name: `${emoji}-${username}`,
         type: ChannelType.GuildText,
@@ -2429,7 +2430,8 @@ client.on('interactionCreate', async (interaction) => {
       const ticketNumber = settings.ticketCounter;
       const emoji = section.emoji || '📌';
       const role = section.roleId ? interaction.guild.roles.cache.get(section.roleId) : null;
-      const username = interaction.user.username.replace(/\s/g, '_');
+      // 🔹 استخدام displayName بدلاً من username
+      const username = interaction.user.displayName.replace(/\s/g, '_');
       const channel = await interaction.guild.channels.create({
         name: `${emoji}-${username}`,
         type: ChannelType.GuildText,
