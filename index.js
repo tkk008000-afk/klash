@@ -1,9 +1,9 @@
 // ============================================================
 // البوت المتكامل - النسخة النهائية مع سجلات التذاكر (HTML) ومكافآت الفويس والرسائل
+// تم تعديله ليعمل على Replit بدون أخطاء
 // ============================================================
 
-const {
-  Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder,
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder,
   ButtonBuilder, ButtonStyle, StringSelectMenuBuilder,
   PermissionsBitField, ChannelType, ModalBuilder,
   TextInputBuilder, TextInputStyle, ActivityType, MessageFlags,
@@ -12,6 +12,9 @@ const {
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const express = require('express');
 const mongoose = require('mongoose');
+const dotenv = require('dotenv');
+dotenv.config(); // تحميل متغيرات البيئة من .env
+
 const app = express();
 const port = process.env.PORT || 3000;
 
