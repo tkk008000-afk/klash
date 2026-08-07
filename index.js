@@ -1593,8 +1593,20 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    // ----- أزرار التذاكر -----
+    // ============================================================
+    // ========== أزرار التذاكر - مقيدة فقط للمتحكمين ==========
+    // ============================================================
+
+    // زر استلام التذكرة - للمتحكمين فقط
     if (interaction.customId === 'claim_ticket') {
+      // التحقق من صلاحية المتحكم
+      if (!(await hasPermission(interaction.member, guildId))) {
+        return interaction.reply({ 
+          content: '❌ هذا الزر مخصص فقط للأعضاء الذين لديهم رتبة التحكم بالبوت.', 
+          flags: MessageFlags.Ephemeral 
+        });
+      }
+
       const log = await getTicketLogByChannel(interaction.channel.id);
       if (!log) {
         return interaction.reply({ content: '❌ هذه القناة ليست تذكرة مسجلة.', flags: MessageFlags.Ephemeral });
@@ -1617,11 +1629,15 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // زر إزالة عضو - للمتحكمين فقط
     if (interaction.customId === 'remove_member_ticket') {
-      const isController = await hasPermission(interaction.member, guildId);
-      if (!isController) {
-        return interaction.reply({ content: '❌ هذا الزر للمتحكمين فقط.', flags: MessageFlags.Ephemeral });
+      if (!(await hasPermission(interaction.member, guildId))) {
+        return interaction.reply({ 
+          content: '❌ هذا الزر مخصص فقط للأعضاء الذين لديهم رتبة التحكم بالبوت.', 
+          flags: MessageFlags.Ephemeral 
+        });
       }
+
       const log = await getTicketLogByChannel(interaction.channel.id);
       if (!log) {
         return interaction.reply({ content: '❌ هذه القناة ليست تذكرة مسجلة.', flags: MessageFlags.Ephemeral });
@@ -1643,7 +1659,15 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // زر إضافة عضو - للمتحكمين فقط
     if (interaction.customId === 'add_member_ticket') {
+      if (!(await hasPermission(interaction.member, guildId))) {
+        return interaction.reply({ 
+          content: '❌ هذا الزر مخصص فقط للأعضاء الذين لديهم رتبة التحكم بالبوت.', 
+          flags: MessageFlags.Ephemeral 
+        });
+      }
+
       const log = await getTicketLogByChannel(interaction.channel.id);
       if (!log) {
         return interaction.reply({ content: '❌ هذه القناة ليست تذكرة مسجلة.', flags: MessageFlags.Ephemeral });
@@ -1665,17 +1689,25 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // زر إغلاق التذكرة - للمتحكمين أو المنشئ أو المستلم
     if (interaction.customId === 'close_ticket') {
       const log = await getTicketLogByChannel(interaction.channel.id);
       if (!log) {
         return interaction.reply({ content: '❌ هذه القناة ليست تذكرة مسجلة.', flags: MessageFlags.Ephemeral });
       }
+
+      // التحقق: متحكم أو منشئ التذكرة أو المستلم
       const isController = await hasPermission(interaction.member, guildId);
       const isClaimer = log.claimedBy === interaction.user.id;
       const isCreator = log.userId === interaction.user.id;
+
       if (!isController && !isClaimer && !isCreator) {
-        return interaction.reply({ content: '❌ ليس لديك صلاحية لإغلاق هذه التذكرة.\nيمكن للمتحكمين، أو المستلم، أو المنشئ إغلاقها.', flags: MessageFlags.Ephemeral });
+        return interaction.reply({ 
+          content: '❌ ليس لديك صلاحية لإغلاق هذه التذكرة.\nيمكن للمتحكمين، أو المستلم، أو المنشئ إغلاقها.', 
+          flags: MessageFlags.Ephemeral 
+        });
       }
+
       await saveTicketMessages(interaction.channel);
       await updateTicketLog(interaction.channel.id, { status: 'closed', closedAt: new Date() });
       const updatedLog = await getTicketLogByChannel(interaction.channel.id);
@@ -2083,6 +2115,12 @@ client.on('interactionCreate', async (interaction) => {
 
     // ----- مودال إضافة عضو -----
     if (interaction.customId === 'add_member_modal') {
+      // تأكد من أن المستخدم لديه صلاحية (تم التحقق من الزر نفسه)
+      // لكن نعيد التحقق للأمان
+      if (!(await hasPermission(interaction.member, guildId))) {
+        return interaction.reply({ content: '❌ ليس لديك صلاحية لإضافة أعضاء.', flags: MessageFlags.Ephemeral });
+      }
+
       const input = interaction.fields.getTextInputValue('member_input').trim();
       let memberId = input;
       const mentionMatch = input.match(/<@!?(\d+)>/);
@@ -2117,6 +2155,11 @@ client.on('interactionCreate', async (interaction) => {
 
     // ----- مودال إزالة عضو -----
     if (interaction.customId === 'remove_member_modal') {
+      // تأكد من أن المستخدم لديه صلاحية (تم التحقق من الزر نفسه)
+      if (!(await hasPermission(interaction.member, guildId))) {
+        return interaction.reply({ content: '❌ ليس لديك صلاحية لإزالة أعضاء.', flags: MessageFlags.Ephemeral });
+      }
+
       const input = interaction.fields.getTextInputValue('remove_member_input').trim();
       let memberId = input;
       const mentionMatch = input.match(/<@!?(\d+)>/);
